@@ -4,6 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
   <title>Knight Fight</title>
+  <!-- PeerJS connects two players' browsers to each other for online games -->
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
     body { margin: 0; background: #222; color: #eee; font-family: sans-serif; text-align: center; }
     /* The arena is 1600x1000; shrink it to fit the window */
@@ -86,6 +88,15 @@
       <button id="toLoginMenu">3 - Go to the login menu</button>
       <button id="friends">4 - Friends</button>
       <p id="menuNote" class="note"></p>
+    </div>
+    <!-- Online: one player creates a game and gets a code, the other joins with it -->
+    <div id="onlineMenu" class="menu" style="display: none">
+      <h1>Play online</h1>
+      <button id="createGame">Create a game</button>
+      <input id="joinCode" maxlength="4" placeholder="Friend's code" autocomplete="off">
+      <button id="joinGame">Join with code</button>
+      <button id="onlineBack">Back</button>
+      <p id="onlineNote" class="note"></p>
     </div>
     <!-- Friends menu: the options don't do anything yet -->
     <div id="friendsMenu" class="menu" style="display: none">
@@ -239,6 +250,7 @@ function makeKnight(x, color, facing, controls) {
 let p1, p2, winner;
 let started = false;   // false while a menu is showing
 let loggedIn = false;  // you must be logged in to play on two computers
+let username = "";
 
 const loginMenu = document.getElementById("loginMenu");
 const loginNote = document.getElementById("loginNote");
@@ -270,6 +282,7 @@ function savedUsername() {
 // Update the main menu for a logged in (name) or logged out ("") player
 function setLoggedIn(name) {
   loggedIn = name !== "";
+  username = name;
   twoComputersButton.disabled = !loggedIn;
   twoComputersButton.textContent = loggedIn ? "2 - Play on two computers" : "2 - Play on two computers (log in first)";
   userLabel.textContent = loggedIn ? "Logged in as " + name : "";
@@ -533,14 +546,197 @@ function startTwoComputers() {
     menuNote.textContent = "You need to log in to play on two computers.";
     return;
   }
-  menuNote.textContent = "Coming soon! Playing on two computers isn't ready yet.";
+  menu.style.display = "none";
+  menuNote.textContent = "";
+  onlineNote.textContent = "";
+  joinCode.value = "";
+  onlineMenu.style.display = "flex";
 }
 
 function showMenu() {
+  leaveOnline();
   started = false;
   menu.style.display = "flex";
   updateTouchControls();
 }
+
+// R and the ↻ button: the host runs the game, so a guest asks the host to restart
+function restartGame() {
+  if (onlineRole === "guest") conn.send({ type: "restart" });
+  else reset();
+}
+
+// ---------- Online games ----------
+// The host (the one who made the code) runs the whole game and is the red knight.
+// The guest sends what they press to the host, and the host sends back the whole game 30 times a second.
+const onlineMenu = document.getElementById("onlineMenu");
+const onlineNote = document.getElementById("onlineNote");
+const joinCode = document.getElementById("joinCode");
+const PEER_PREFIX = "knightfight-erik-";        // so our codes don't clash with other PeerJS games
+const CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";  // no 0/O or 1/I to mix up
+
+let onlineRole = null;   // null (not online), "host" or "guest"
+let peer = null;         // our PeerJS connection to the matchmaking server
+let conn = null;         // the connection to the other player
+let remoteInput = {};    // what the guest is pressing (host only)
+let playerNames = {};    // { 1: host's username, 2: guest's username }
+
+function makeCode() {
+  let code = "";
+  for (let i = 0; i < 4; i++) code += CODE_LETTERS[Math.floor(Math.random() * CODE_LETTERS.length)];
+  return code;
+}
+
+function onlineAvailable() {
+  if (typeof Peer === "undefined") {
+    onlineNote.textContent = "Couldn't load the online part. Check your internet and reload the page.";
+    return false;
+  }
+  return true;
+}
+
+function createGame() {
+  if (!onlineAvailable()) return;
+  leaveOnline();
+  const code = makeCode();
+  onlineNote.textContent = "Creating a game...";
+  peer = new Peer(PEER_PREFIX + code);
+  peer.on("open", () => {
+    onlineNote.textContent = "Your code is " + code + ". Give it to your friend and wait here.";
+  });
+  peer.on("connection", c => {
+    if (conn) { c.close(); return; }  // only one friend at a time
+    useConnection(c, "host");
+  });
+  peer.on("error", err => {
+    if (err.type === "unavailable-id") createGame();  // the code was taken, try another
+    else onlineNote.textContent = "Something went wrong: " + err.type;
+  });
+}
+
+function joinGame() {
+  if (!onlineAvailable()) return;
+  const code = joinCode.value.trim().toUpperCase();
+  if (code.length !== 4) {
+    onlineNote.textContent = "Type your friend's 4 letter code.";
+    return;
+  }
+  leaveOnline();
+  onlineNote.textContent = "Joining " + code + "...";
+  peer = new Peer();
+  peer.on("open", () => useConnection(peer.connect(PEER_PREFIX + code, { reliable: true }), "guest"));
+  peer.on("error", err => {
+    onlineNote.textContent = err.type === "peer-unavailable"
+      ? "No game with the code " + code + ". Check the code with your friend."
+      : "Something went wrong: " + err.type;
+  });
+}
+
+function useConnection(c, role) {
+  conn = c;
+  c.on("open", () => {
+    onlineRole = role;
+    playerNames = {};
+    playerNames[role === "host" ? 1 : 2] = savedUsernameOrName();
+    c.send({ type: "hello", name: savedUsernameOrName() });
+    startOnlineGame();
+  });
+  c.on("data", onOnlineData);
+  c.on("close", onlineEnded);
+  c.on("error", onlineEnded);
+}
+
+function savedUsernameOrName() {
+  return username || "Player";
+}
+
+function onOnlineData(d) {
+  if (d.type === "hello") playerNames[onlineRole === "host" ? 2 : 1] = String(d.name).slice(0, 20);
+  if (d.type === "input" && onlineRole === "host") remoteInput = d.input;
+  if (d.type === "restart" && onlineRole === "host") reset();
+  if (d.type === "state" && onlineRole === "guest") applyState(d.state);
+}
+
+function startOnlineGame() {
+  reset();
+  lastSentInput = "";
+  onlineMenu.style.display = "none";
+  document.activeElement.blur();
+  started = true;
+  updateTouchControls();
+}
+
+// Everything the guest needs to draw the game
+function knightState(k) {
+  return { x: k.x, y: k.y, facing: k.facing, health: k.health, attackTimer: k.attackTimer,
+           blocking: k.blocking, fireCooldown: k.fireCooldown, stamina: k.stamina, tired: k.tired };
+}
+
+function sendState() {
+  conn.send({ type: "state", state: {
+    p1: knightState(p1), p2: knightState(p2),
+    fireballs: fireballs.map(f => ({ x: f.x, y: f.y })),
+    explosions: explosions,
+    hearts: hearts.map(h => ({ x: h.x, y: h.y })),
+    bats: bats.map(b => ({ x: b.x, y: b.y })),
+    winner: winner,
+    names: playerNames
+  }});
+}
+
+function applyState(s) {
+  Object.assign(p1, s.p1);
+  Object.assign(p2, s.p2);
+  fireballs = s.fireballs;
+  explosions = s.explosions;
+  hearts = s.hearts;
+  bats = s.bats;
+  winner = s.winner;
+  playerNames = s.names;
+}
+
+function leaveOnline() {
+  onlineRole = null;   // set first, so closing below doesn't count as the friend leaving
+  if (conn) conn.close();
+  if (peer) peer.destroy();
+  conn = null;
+  peer = null;
+  remoteInput = {};
+  playerNames = {};
+}
+
+// The guest tells the host what it is pressing, but only when that changes
+let lastSentInput = "";
+
+function sendInput() {
+  const input = JSON.stringify(localInput());
+  if (input === lastSentInput) return;
+  conn.send({ type: "input", input: JSON.parse(input) });
+  lastSentInput = input;
+}
+
+// The friend left or the connection broke
+function onlineEnded() {
+  if (!onlineRole) return;
+  showMenu();
+  menuNote.textContent = "The online game ended. Your friend left or the connection was lost.";
+}
+
+// The name shown on a knight's health bar and when it wins
+function knightName(k) {
+  const number = k === p1 ? 1 : 2;
+  return playerNames[number] || "Player " + number;
+}
+
+function closeOnlineMenu() {
+  leaveOnline();
+  onlineMenu.style.display = "none";
+  menu.style.display = "flex";
+}
+
+document.getElementById("createGame").addEventListener("click", createGame);
+document.getElementById("joinGame").addEventListener("click", joinGame);
+document.getElementById("onlineBack").addEventListener("click", closeOnlineMenu);
 
 const P1_CONTROLS = { left: "a", right: "d", up: "w", down: "s", attack: " ", fire: "e", sprint: "ShiftLeft" };
 const P2_CONTROLS = { left: "ArrowLeft", right: "ArrowRight", up: "ArrowUp", down: "ArrowDown", attack: "Enter", fire: "ShiftRight", sprint: "Slash" };
@@ -592,12 +788,14 @@ function tapButton(label, onTap) {
 
 const touchTop = document.createElement("div");
 touchTop.id = "touchTop";
-touchTop.append(tapButton("↻", reset), tapButton("☰", showMenu));
-touchControls.append(makeTouchPad(P1_CONTROLS, "left"), makeTouchPad(P2_CONTROLS, "right"), touchTop);
+touchTop.append(tapButton("↻", restartGame), tapButton("☰", showMenu));
+const rightTouchPad = makeTouchPad(P2_CONTROLS, "right");
+touchControls.append(makeTouchPad(P1_CONTROLS, "left"), rightTouchPad, touchTop);
 
 function updateTouchControls() {
   const isTouch = matchMedia("(pointer: coarse)").matches;
   touchControls.style.display = isTouch && started ? "block" : "none";
+  rightTouchPad.style.display = onlineRole ? "none" : "flex";  // online you only need one set of buttons
   if (!started) for (const k in keys) keys[k] = false;  // let go of every button
 }
 
@@ -634,6 +832,12 @@ document.addEventListener("keydown", function (e) {
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   keys[key] = true;
   keys[e.code] = true;   // e.code tells left and right Shift apart
+  if (onlineMenu.style.display !== "none") {
+    // Typing a code: Enter joins, Esc goes back. Other keys just type.
+    if (key === "Enter") joinGame();
+    if (key === "Escape") closeOnlineMenu();
+    return;
+  }
   if (loginForm.style.display !== "none") {
     // Typing a username: Enter logs in, Esc goes back. Other keys just type.
     if (key === "Enter") confirmLogin();
@@ -674,7 +878,7 @@ document.addEventListener("keydown", function (e) {
     if (key === "4") openFriendsMenu();
     return;
   }
-  if (key === "r") reset();
+  if (key === "r") restartGame();
   if (key === "Escape") showMenu();
   // Stop space and arrow keys from scrolling the page
   // (Slash is the "-" key on a Swedish keyboard and "/" on a US one; "/" opens quick find in Firefox)
@@ -686,13 +890,34 @@ document.addEventListener("keyup", function (e) {
   keys[e.code] = false;
 });
 
+// What a knight's player is pressing right now: { left, right, up, down, attack, fire, sprint }
+function readKeys(c) {
+  const input = {};
+  for (const name in c) input[name] = keys[c[name]] === true;
+  return input;
+}
+
+// Online you only have one knight, so both key sets (and both touch pads) control it
+function localInput() {
+  const a = readKeys(P1_CONTROLS);
+  const b = readKeys(P2_CONTROLS);
+  for (const name in a) a[name] = a[name] || b[name];
+  return a;
+}
+
+function inputFor(k) {
+  if (onlineRole === "host") return k === p1 ? localInput() : remoteInput;
+  return readKeys(k.controls);
+}
+
 function updateKnight(k, other) {
-  const c = k.controls;
-  const blocking = keys[c.down] && k.onGround;
+  const c = inputFor(k);
+  k.input = c;
+  const blocking = c.down && k.onGround;
 
   // Sprint while there is stamina; running out makes you tired until it refills
-  const moving = keys[c.left] || keys[c.right];
-  const sprinting = keys[c.sprint] && moving && !k.tired && !blocking;
+  const moving = c.left || c.right;
+  const sprinting = c.sprint && moving && !k.tired && !blocking;
   if (sprinting) {
     k.stamina -= STAMINA_DRAIN;
     if (k.stamina <= 0) { k.stamina = 0; k.tired = true; }
@@ -706,16 +931,16 @@ function updateKnight(k, other) {
   if (sprinting) speed = SPRINT_SPEED;
   if (k.tired) speed = TIRED_SPEED;
   if (blocking) speed = SPEED / 3;
-  if (keys[c.left])  { k.x -= speed; k.facing = -1; }
-  if (keys[c.right]) { k.x += speed; k.facing = 1; }
+  if (c.left)  { k.x -= speed; k.facing = -1; }
+  if (c.right) { k.x += speed; k.facing = 1; }
 
   // Jump
-  if (keys[c.up] && k.onGround) k.vy = -JUMP;
+  if (c.up && k.onGround) k.vy = -JUMP;
 
   // Gravity, or swimming in a waterfall: hold up to rise, otherwise sink slowly
   const prevY = k.y;
   if (inWater(k)) {
-    k.vy = keys[c.up] ? -SWIM_SPEED : SINK_SPEED;
+    k.vy = c.up ? -SWIM_SPEED : SINK_SPEED;
   } else {
     k.vy += GRAVITY;
   }
@@ -744,7 +969,7 @@ function updateKnight(k, other) {
   k.x = Math.max(0, Math.min(canvas.width - k.width, k.x));
 
   // Start an attack
-  if (keys[c.attack] && k.cooldown === 0 && !blocking) {
+  if (c.attack && k.cooldown === 0 && !blocking) {
     k.attackTimer = 12;
     k.cooldown = 30;
     k.hasHit = false;
@@ -753,7 +978,7 @@ function updateKnight(k, other) {
   if (k.cooldown > 0) k.cooldown--;
 
   // Shoot a fireball (only when the cooldown has run out)
-  if (keys[c.fire] && k.fireCooldown === 0 && !blocking) {
+  if (c.fire && k.fireCooldown === 0 && !blocking) {
     fireballs.push({
       x: k.facing === 1 ? k.x + k.width + 10 : k.x - 10,
       y: k.y - k.height + 35,
@@ -777,7 +1002,7 @@ function updateKnight(k, other) {
 
 // Damage a knight. direction is the way the hit is travelling (1 = right, -1 = left).
 function hit(target, damage, direction) {
-  const blocking = keys[target.controls.down] && target.onGround && target.facing === -direction;
+  const blocking = target.input && target.input.down && target.onGround && target.facing === -direction;
   target.health -= blocking ? damage / 5 : damage;
   target.x += direction * 25;  // knockback
 }
@@ -1037,17 +1262,21 @@ function drawHealthBar(k, x, label) {
 }
 
 function loop() {
-  if (started && !winner) {
+  // An online guest doesn't run the game itself, it just draws what the host sends
+  const isGuest = onlineRole === "guest";
+  if (started && !winner && !isGuest) {
     updateKnight(p1, p2);
     updateKnight(p2, p1);
     separate(p1, p2);
     updateFireballs();
     updateHearts();
     updateBats();
-    if (p1.health <= 0) winner = "Player 2";
-    if (p2.health <= 0) winner = "Player 1";
+    if (p1.health <= 0) winner = knightName(p2);
+    if (p2.health <= 0) winner = knightName(p1);
   }
-  updateExplosions();
+  if (!isGuest) updateExplosions();
+  if (started && onlineRole === "host" && frame % 2 === 0) sendState();
+  if (started && isGuest) sendInput();
 
   // Draw
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -1086,8 +1315,8 @@ function loop() {
   bats.forEach(drawBat);
   fireballs.forEach(drawFireball);
   explosions.forEach(drawExplosion);
-  drawHealthBar(p1, 20, "Player 1");
-  drawHealthBar(p2, canvas.width - 420, "Player 2");
+  drawHealthBar(p1, 20, knightName(p1));
+  drawHealthBar(p2, canvas.width - 420, knightName(p2));
 
   if (winner) {
     ctx.fillStyle = "rgba(0,0,0,0.6)";
