@@ -1973,8 +1973,8 @@ document.getElementById("help").innerHTML = CASTLE
   ? "Player 1: W A S D move, mouse look, left click sword, right click or E fireball, Space jump, Left Shift sprint &nbsp;|&nbsp; " +
     "Player 2: ↑ ↓ walk, ← → turn, - jump, Enter sword, Right Shift fireball, ' sprint &nbsp;|&nbsp; " +
     "Hold jump in a waterfall to swim up &nbsp;|&nbsp; R restart, Esc menu"
-  : "Player 1: W A S D move, mouse look, left click shoot, right click scope, C crouch, Left Shift sprint, E or G grenade, Space jump &nbsp;|&nbsp; " +
-    "Player 2: ↑ ↓ walk, ← → turn, Enter shoot, . scope, , crouch, ' sprint, Right Shift grenade, - jump &nbsp;|&nbsp; " +
+  : "Player 1: W A S D move, mouse look, left click shoot, right click scope (on/off), C crouch, Left Shift sprint, E or G grenade, Space jump &nbsp;|&nbsp; " +
+    "Player 2: ↑ ↓ walk, ← → turn, Enter shoot, . scope (on/off), , crouch, ' sprint, Right Shift grenade, - jump &nbsp;|&nbsp; " +
     "Aim for the head! &nbsp;|&nbsp; R restart, Esc menu";
 if (CASTLE) document.querySelectorAll(".ammo, .headshot, .scope").forEach(e => e.remove());
 
@@ -2244,7 +2244,7 @@ function restart() {
       health: MAX_HEALTH, onGround: true, dead: false, deadTime: 0,
       swing: 0, swingCooldown: 0, fireCooldown: 0, walk: 0, hurt: 0, shake: 0,
       ammo: RIFLE_AMMO, reload: 0, fireTimer: 0, recoil: 0, flash: 0, headshot: 0,
-      crouch: 0, aim: 0,            // 0 = standing / not aiming, 1 = fully crouched / looking through the scope
+      crouch: 0, aim: 0, aimOn: false, aimHeld: false,            // 0 = standing / not aiming, 1 = fully crouched / looking through the scope
       moveAmount: 0, sway: 0, lastYaw: null   // for running animations and weapon sway
     });
     p.model.rotation.set(0, 0, 0);
@@ -2315,7 +2315,11 @@ function updatePlayer(p, other, dt) {
     // Crouching and aiming happen smoothly over a fraction of a second. You cannot aim while reloading.
     const toward = (value, target, speed) => value < target ? Math.min(target, value + speed * dt) : Math.max(target, value - speed * dt);
     p.crouch = toward(p.crouch, keys[c.crouch] && p.onGround ? 1 : 0, 7);
-    p.aim = toward(p.aim, keys[c.aim] && p.reload <= 0 ? 1 : 0, 7);
+    // The scope button is a switch: press once to look through the scope, press again to stop
+    if (keys[c.aim] && !p.aimHeld) p.aimOn = !p.aimOn;
+    p.aimHeld = !!keys[c.aim];
+    if (keys[c.sprint]) p.aimOn = false;   // starting to sprint lowers the rifle
+    p.aim = toward(p.aim, p.aimOn && p.reload <= 0 ? 1 : 0, 7);
   }
   // Crouching and aiming make you walk slower
   const slow = (1 - 0.55 * p.crouch) * (1 - 0.45 * p.aim);

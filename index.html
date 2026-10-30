@@ -10,6 +10,8 @@
   <!-- PeerJS connects two players' browsers to each other for online games.
        "async" means the game doesn't have to wait for it to load. -->
   <script async src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <!-- MQTT talks to a public message server, the backup route when the two players can't reach each other directly -->
+  <script async src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
   <style>
     body { margin: 0; background: #222; color: #eee; font-family: sans-serif; text-align: center; }
     /* No zooming when you tap quickly twice (Safari ignores user-scalable=no) */
@@ -99,7 +101,7 @@
       <button id="logIn">2 - Log in</button>
       <p id="loginNote" class="note"></p>
       <!-- Change the number with every upload, so you can see if a phone has the newest version -->
-      <p class="version">Version 19</p>
+      <p class="version">Version 20</p>
     </div>
     <!-- Log in: just a username -->
     <div id="loginForm" class="menu" style="display: none">
@@ -117,7 +119,7 @@
       <button id="toLoginMenu">3 - Go to the login menu</button>
       <button id="friends">4 - Friends</button>
       <p id="menuNote" class="note"></p>
-      <p class="version">Version 19</p>
+      <p class="version">Version 20</p>
     </div>
     <!-- Play on one computer: pick the normal 2D game or the first person 3D game -->
     <div id="modeMenu" class="menu" style="display: none">
@@ -633,7 +635,7 @@ function makeCode() {
 }
 
 function onlineAvailable() {
-  if (typeof Peer === "undefined") {
+  if (typeof Peer === "undefined" && typeof mqtt === "undefined") {
     onlineNote.textContent = "Couldn't load the online part. Check your internet and reload the page.";
     return false;
   }
@@ -646,6 +648,11 @@ function createGame() {
   leaveOnline();
   const code = makeCode();
   onlineNote.textContent = "Creating a game...";
+  startRelayHost(code);   // the backup route listens from the start, so a friend can come in either way
+  if (typeof Peer === "undefined") {
+    onlineNote.textContent = "Your code is " + code + ". Give it to your friend and wait here.";
+    return;
+  }
   peer = new Peer(PEER_PREFIX + code);
   peer.on("open", () => {
     onlineNote.textContent = "Your code is " + code + ". Give it to your friend and wait here.";
@@ -660,6 +667,7 @@ function createGame() {
   peer.on("disconnected", () => reconnectHost());
   peer.on("error", err => {
     if (err.type === "unavailable-id") createGame();  // the code was taken, try another
+    else if (err.type === "browser-incompatible" || err.type === "server-error") onlineNote.textContent = "Your code is " + code + ". Give it to your friend and wait here.";
     else if (err.type === "network" || err.type === "server-error" || err.type === "socket-error") reconnectHost();
     else onlineNote.textContent = "Something went wrong: " + err.type;
   });
@@ -675,8 +683,7 @@ document.addEventListener("visibilitychange", () => {
   if (!document.hidden) setTimeout(reconnectHost, 500);
 });
 
-const JOIN_TRIES = 3;
-const JOIN_WAIT = 12000;   // milliseconds to wait for each try
+const JOIN_WAIT = 6000;   // milliseconds to wait for the direct connection before using the backup route
 
 function joinGame() {
   if (!onlineAvailable()) return;
@@ -688,34 +695,139 @@ function joinGame() {
   fullscreenOnPhone();
   leaveOnline();
   onlineNote.textContent = "Joining " + code + "...";
+  if (typeof Peer === "undefined") { startRelayJoin(code); return; }
   const myPeer = new Peer();
   peer = myPeer;
-  myPeer.on("open", () => tryToJoin(myPeer, code, 1));
-  myPeer.on("error", err => {
-    if (peer !== myPeer) return;  // an old try we already gave up on
-    onlineNote.textContent = err.type === "peer-unavailable"
-      ? "No game with the code " + code + ". Check the code, and that your friend still has the game open."
-      : "Something went wrong: " + err.type + ". Try again.";
+  myPeer.on("open", () => tryToJoin(myPeer, code));
+  myPeer.on("error", () => {
+    // Couldn't go direct (no answer, or the matchmaking server had trouble): use the backup route
+    if (peer !== myPeer || onlineRole || relayClient) return;
+    giveUpDirect(myPeer);
+    startRelayJoin(code);
   });
 }
 
-// Try to reach the friend. If nothing happens for a while, try again a couple of times.
-function tryToJoin(myPeer, code, attempt) {
+function giveUpDirect(myPeer) {
+  if (conn) conn.close();
+  conn = null;
+  peer = null;
+  myPeer.destroy();
+}
+
+// Try to reach the friend directly. If that hasn't worked after a few seconds, use the backup route.
+function tryToJoin(myPeer, code) {
   if (peer !== myPeer) return;  // gave up or started over
   const c = myPeer.connect(PEER_PREFIX + code, { reliable: true });
   useConnection(c, "guest");
   setTimeout(() => {
     if (peer !== myPeer || onlineRole || conn !== c) return;  // joined, or gave up
-    c.close();
-    conn = null;
-    if (attempt < JOIN_TRIES) {
-      onlineNote.textContent = "Still trying to join " + code + " (try " + (attempt + 1) + " of " + JOIN_TRIES + ")...";
-      tryToJoin(myPeer, code, attempt + 1);
-    } else {
-      onlineNote.textContent = "Couldn't reach " + code + ". Your friend should keep the game open on the screen " +
-                               "with the code. If it still doesn't work, try both being on the same wifi.";
-    }
+    giveUpDirect(myPeer);
+    startRelayJoin(code);
   }, JOIN_WAIT);
+}
+
+// ---------- Backup route: a public message server (HiveMQ) ----------
+// Phones on mobile data often can't reach each other directly, and PeerJS's own relay servers no longer exist.
+// Then both players connect out to a free public message server instead and send the game through it.
+// The host listens on ".../host" and the guest on ".../guest", under a name made from the game code.
+const RELAY_BROKER = "wss://broker.hivemq.com:8884/mqtt";
+const RELAY_TOPIC = "knightfight-erik/";
+let relayClient = null;
+
+// Works like a PeerJS connection (on, send, close, open), so the rest of the game doesn't need to know the difference
+class RelayConnection {
+  constructor(client, sendTopic) {
+    this.client = client;
+    this.sendTopic = sendTopic;
+    this.handlers = {};
+    this.open = false;
+    this.closed = false;
+    this.lastHeard = Date.now();
+    // Say "ping" now and then, and give up if the friend has been silent for 10 seconds
+    this.pinger = setInterval(() => { if (this.open) this.send({ type: "ping" }); }, 3000);
+    this.watchdog = setInterval(() => { if (this.open && Date.now() - this.lastHeard > 10000) this.close(true); }, 2000);
+  }
+  on(event, handler) { (this.handlers[event] = this.handlers[event] || []).push(handler); }
+  emit(event, value) { (this.handlers[event] || []).forEach(handler => handler(value)); }
+  send(message) { if (this.client.connected) this.client.publish(this.sendTopic, JSON.stringify(message)); }
+  receive(message) {
+    this.lastHeard = Date.now();
+    if (message.type === "bye") this.close(true);
+    else if (message.type !== "ping") this.emit("data", message);
+  }
+  start() { this.open = true; this.lastHeard = Date.now(); this.emit("open"); }
+  close(theyLeft) {
+    if (this.closed) return;
+    this.closed = true;
+    clearInterval(this.pinger);
+    clearInterval(this.watchdog);
+    if (!theyLeft) this.send({ type: "bye" });
+    this.open = false;
+    this.emit("close");
+  }
+}
+
+function connectRelay(listenTopic, onMessage) {
+  if (typeof mqtt === "undefined") return null;
+  const client = mqtt.connect(RELAY_BROKER, {
+    clientId: "kf-" + Math.random().toString(36).slice(2, 10), reconnectPeriod: 2000, connectTimeout: 8000
+  });
+  client.on("connect", () => client.subscribe(listenTopic));
+  client.on("message", (topic, payload) => {
+    try { onMessage(JSON.parse(payload.toString())); } catch (e) {}   // ignore anything that isn't ours
+  });
+  return client;
+}
+
+function startRelayHost(code) {
+  const base = RELAY_TOPIC + code;
+  let relay = null;
+  const myClient = connectRelay(base + "/host", message => {
+    if (relayClient !== myClient) return;
+    if (message.type === "join") {
+      if (conn && conn.open) return;          // already playing (directly, or this guest asked twice)
+      if (conn) conn.close();                 // a direct try that never got through
+      relay = new RelayConnection(myClient, base + "/guest");
+      useConnection(relay, "host");
+      relay.send({ type: "welcome" });
+      relay.start();
+    } else if (relay && conn === relay) {
+      relay.receive(message);
+    }
+  });
+  relayClient = myClient;
+}
+
+function startRelayJoin(code) {
+  const base = RELAY_TOPIC + code;
+  onlineNote.textContent = "Trying another way to reach " + code + "...";
+  let relay = null;
+  const myClient = connectRelay(base + "/guest", message => {
+    if (relayClient !== myClient) return;
+    if (message.type === "welcome" && !relay) {
+      relay = new RelayConnection(myClient, base + "/host");
+      useConnection(relay, "guest");
+      relay.start();
+    } else if (relay) {
+      relay.receive(message);
+    }
+  });
+  if (!myClient) {
+    onlineNote.textContent = "Couldn't reach " + code + ". Check your internet and try again.";
+    return;
+  }
+  relayClient = myClient;
+  // Knock on the host's door once a second until it answers, for up to 15 seconds
+  let tries = 0;
+  const asking = setInterval(() => {
+    if (relayClient !== myClient || relay) { clearInterval(asking); return; }
+    if (++tries > 15) {
+      clearInterval(asking);
+      onlineNote.textContent = "Couldn't reach " + code + ". Check the code with your friend, and that they still have the game open.";
+      return;
+    }
+    if (myClient.connected) myClient.publish(base + "/host", JSON.stringify({ type: "join" }));
+  }, 1000);
 }
 
 function useConnection(c, role) {
@@ -791,10 +903,13 @@ function leaveOnline() {
   onlineRole = null;   // set first, so closing below doesn't count as the friend leaving
   const oldConn = conn;
   const oldPeer = peer;
+  const oldRelay = relayClient;
   conn = null;         // and these too, so closing doesn't trigger a reconnect or a new try
   peer = null;
+  relayClient = null;
   if (oldConn) oldConn.close();
   if (oldPeer) oldPeer.destroy();
+  if (oldRelay) setTimeout(() => oldRelay.end(), 300);   // a moment to let the goodbye go out first
   remoteInput = {};
   playerNames = {};
 }
@@ -1789,7 +1904,7 @@ function loop() {
     if (p2.health <= 0) winner = knightName(p1);
   }
   if (!isGuest) updateExplosions();
-  if (started && onlineRole === "host" && frame % 2 === 0) sendState();
+  if (started && onlineRole === "host" && frame % (conn instanceof RelayConnection ? 3 : 2) === 0) sendState();
   if (started && isGuest) sendInput();
 
   // Draw: sky and ground, clouds, waterfalls, lava, platforms, then everything that moves
