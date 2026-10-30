@@ -135,6 +135,7 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
+import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 
 // ---------- Settings ----------
 const ARENA = 20;            // the arena goes from -20 to 20 on both sides
@@ -214,7 +215,10 @@ function mouseLocked() {
 
 addEventListener("mousedown", e => {
   if (!mouseLocked()) {
-    if (!isPhone) renderer.domElement.requestPointerLock();
+    if (!isPhone) {
+      const asked = renderer.domElement.requestPointerLock();
+      if (asked && asked.catch) asked.catch(() => {});   // some pages (like previews) are not allowed to grab the mouse
+    }
     return;   // the click that grabs the mouse doesn't swing the sword
   }
   keys["Mouse" + e.button] = true;
@@ -1449,6 +1453,46 @@ particleMesh.count = 0;
 scene.add(particleMesh);
 let particles = [];
 
+// Tiny specks of dust (or pollen in the castle) drifting slowly in the light
+const DUST_COUNT = isPhone ? 120 : 400;
+const dustPositions = new Float32Array(DUST_COUNT * 3);
+for (let i = 0; i < DUST_COUNT; i++) {
+  dustPositions[i * 3] = (Math.random() * 2 - 1) * ARENA;
+  dustPositions[i * 3 + 1] = 0.3 + Math.random() * 6;
+  dustPositions[i * 3 + 2] = (Math.random() * 2 - 1) * ARENA;
+}
+const dustGeometry = new THREE.BufferGeometry();
+dustGeometry.setAttribute("position", new THREE.BufferAttribute(dustPositions, 3));
+const dust = new THREE.Points(dustGeometry, new THREE.PointsMaterial({
+  color: CASTLE ? "#fff6d0" : "#ffd9a0", size: 0.035, transparent: true, opacity: 0.55, depthWrite: false
+}));
+dust.frustumCulled = false;
+scene.add(dust);
+
+// Bullet holes: small dark marks where bullets hit walls, crates and the ground (the oldest disappear first)
+const HOLE_MAX = 150;
+const holeGeometry = new THREE.CircleGeometry(0.035, 10);
+const holes = new THREE.InstancedMesh(holeGeometry, new THREE.MeshStandardMaterial({
+  color: "#141210", roughness: 1, polygonOffset: true, polygonOffsetFactor: -3
+}), HOLE_MAX);
+holes.count = 0;
+holes.frustumCulled = false;
+scene.add(holes);
+let nextHole = 0;
+const holeQuaternion = new THREE.Quaternion();
+const holeScale = new THREE.Vector3();
+const facing = new THREE.Vector3(0, 0, 1);
+
+function addBulletHole(point, normal) {
+  holeQuaternion.setFromUnitVectors(facing, normal);
+  holeScale.setScalar(0.7 + Math.random() * 0.6);
+  const m = new THREE.Matrix4().compose(point.clone().addScaledVector(normal, 0.01), holeQuaternion, holeScale);
+  holes.setMatrixAt(nextHole, m);
+  nextHole = (nextHole + 1) % HOLE_MAX;
+  holes.count = Math.min(HOLE_MAX, holes.count + 1);
+  holes.instanceMatrix.needsUpdate = true;
+}
+
 function addParticle(x, y, z, vx, vy, vz, size, color, life, gravity = 0) {
   if (particles.length >= PARTICLE_MAX) return;
   particles.push({ x, y, z, vx, vy, vz, size, color: new THREE.Color(color), life, maxLife: life, gravity });
@@ -1649,7 +1693,7 @@ function makeKnight(color) {
   shieldArm.shoulder.rotation.x = 0.5;
   shieldArm.elbow.rotation.x = 1.1;
   const sword = makeSword(steel, gold, leather);
-  sword.rotation.x = -0.78;   // points the blade forward and a bit up when the arm is resting
+  sword.rotation.set(-0.78, 0, 0.3);   // the blade points up and forward, leaning a little across the body
   swordArm.hand.add(sword);
 
   // Kite shield in the team color with a steel rim and a gold cross, held in front on the left
@@ -1664,7 +1708,15 @@ function makeKnight(color) {
   add(new THREE.BoxGeometry(0.42, 0.06, 0.02), gold, 0, 0.1, -0.04, shield);
   shield.rotation.z = Math.PI;   // the pointed end goes down
 
-  knight.userData = { legL, legR, swordArm, cape, head, torso };
+  // Everything above the hips hangs on one "upper body" pivot, so the body can bob, lean and twist when running
+  const upper = new THREE.Group();
+  upper.position.y = 0.9;
+  knight.add(upper);
+  knight.updateMatrixWorld(true);
+  for (const part of [torso, head, swordArm.shoulder, shieldArm.shoulder, shield, cape]) upper.attach(part);
+  upper.userData.baseY = upper.position.y;
+
+  knight.userData = { legL, legR, swordArm, shieldArm, cape, head, torso, upper };
   scene.add(knight);
   return knight;
 }
@@ -1679,9 +1731,11 @@ function makeViewSword(camera, layer) {
   sword.scale.setScalar(0.32);
   const glove = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.045, 0.05), new THREE.MeshStandardMaterial({ color: "#8f969f", roughness: 0.4, metalness: 1 }));
   glove.position.y = -0.01;
-  holder.add(sword, glove);
-  holder.position.set(0.19, -0.25, -0.58);
-  holder.rotation.set(-0.85, -0.25, -0.2);   // blade points forward and a little up
+  const forearm = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.034, 0.3, 12),
+                                 new THREE.MeshStandardMaterial({ color: "#a9b0b9", roughness: 0.3, metalness: 1 }));
+  forearm.position.set(0.03, -0.13, 0.08);
+  forearm.rotation.set(0.6, 0, 0.25);
+  holder.add(sword, glove, forearm);
   holder.traverse(o => o.layers.set(layer));
   camera.add(holder);
   return holder;
@@ -2036,18 +2090,35 @@ function aimPitch(p, other) {
 }
 
 // How far a ray goes before it hits a wall, a crate, the ground or the edge of the arena
+// It also remembers which way the surface it hit was facing (hitNormal), for the bullet hole.
+const hitNormal = new THREE.Vector3();
 function rayDistance(origin, direction, maxDist) {
   let nearest = maxDist;
+  hitNormal.set(0, 1, 0);
   ray.set(origin, direction);
   for (const b of platforms) {
     box3.min.set(b.x - b.w / 2, b.bottom || 0, b.z - b.d / 2);
     box3.max.set(b.x + b.w / 2, b.h, b.z + b.d / 2);
-    if (ray.intersectBox(box3, hitVector)) nearest = Math.min(nearest, hitVector.distanceTo(origin));
+    if (ray.intersectBox(box3, hitVector)) {
+      const d = hitVector.distanceTo(origin);
+      if (d < nearest) {
+        nearest = d;
+        // Which side of the box: the one the hit point is closest to
+        const sides = [[hitVector.x - box3.min.x, -1, 0, 0], [box3.max.x - hitVector.x, 1, 0, 0], [hitVector.y - box3.min.y, 0, -1, 0],
+                       [box3.max.y - hitVector.y, 0, 1, 0], [hitVector.z - box3.min.z, 0, 0, -1], [box3.max.z - hitVector.z, 0, 0, 1]];
+        const side = sides.reduce((a, b2) => (b2[0] < a[0] ? b2 : a));
+        hitNormal.set(side[1], side[2], side[3]);
+      }
+    }
   }
-  if (direction.y < 0) nearest = Math.min(nearest, -origin.y / direction.y);
-  for (const [o, d] of [[origin.x, direction.x], [origin.z, direction.z]]) {
-    if (d > 0) nearest = Math.min(nearest, (ARENA - o) / d);
-    if (d < 0) nearest = Math.min(nearest, (-ARENA - o) / d);
+  if (direction.y < 0 && -origin.y / direction.y < nearest) { nearest = -origin.y / direction.y; hitNormal.set(0, 1, 0); }
+  const walls = [[origin.x, direction.x, "x"], [origin.z, direction.z, "z"]];
+  for (const [o, d, axis] of walls) {
+    const t = d > 0 ? (ARENA - o) / d : d < 0 ? (-ARENA - o) / d : Infinity;
+    if (t < nearest) {
+      nearest = t;
+      hitNormal.set(axis === "x" ? -Math.sign(d) : 0, 0, axis === "z" ? -Math.sign(d) : 0);
+    }
   }
   return nearest;
 }
@@ -2074,6 +2145,7 @@ function shoot(p, other) {
   const origin = new THREE.Vector3(p.x, p.y + eyeHeight(p), p.z);
   const direction = new THREE.Vector3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
   let distance = rayDistance(origin, direction, 80);
+  const surfaceNormal = hitNormal.clone();
   let hit = null;
   if (!other.dead) {
     ray.set(origin, direction);
@@ -2100,7 +2172,8 @@ function shoot(p, other) {
     hurt(other, hit === "head" ? RIFLE_HEAD_DAMAGE : RIFLE_BODY_DAMAGE, p.x, p.z, hit === "head" ? 4 : 2.5, hit === "head" ? 14 : 7, end.y);
     if (hit === "head") p.headshot = 0.8;
   } else {
-    // Dust and sparks where the bullet hits
+    // A hole, dust and sparks where the bullet hits
+    if (distance < 80) addBulletHole(end, surfaceNormal);
     for (let i = 0; i < 6; i++) {
       addParticle(end.x, end.y, end.z, (Math.random() - 0.5) * 2, Math.random() * 2, (Math.random() - 0.5) * 2,
                   0.03 + Math.random() * 0.03, i < 2 ? "#ffe9a8" : "#8d8273", 0.4, 6);
@@ -2170,11 +2243,14 @@ function restart() {
       health: MAX_HEALTH, onGround: true, dead: false, deadTime: 0,
       swing: 0, swingCooldown: 0, fireCooldown: 0, walk: 0, hurt: 0, shake: 0,
       ammo: RIFLE_AMMO, reload: 0, fireTimer: 0, recoil: 0, flash: 0, headshot: 0,
-      crouch: 0, aim: 0             // 0 = standing / not aiming, 1 = fully crouched / looking through the scope
+      crouch: 0, aim: 0,            // 0 = standing / not aiming, 1 = fully crouched / looking through the scope
+      moveAmount: 0, sway: 0, lastYaw: null   // for running animations and weapon sway
     });
     p.model.rotation.set(0, 0, 0);
   });
   for (const list of [hearts, fireballs, explosions, grenades, tracers]) list.forEach(o => scene.remove(o.mesh || o));
+  holes.count = 0;
+  nextHole = 0;
   smoke.forEach(s => scene.remove(s.sprite));
   hearts = [];
   fireballs = [];
@@ -2266,8 +2342,11 @@ function updatePlayer(p, other, dt) {
     const dx = dir.x * move - dir.z * side * 0.8;
     const dz = dir.z * move + dir.x * side * 0.8;
     tryMove(p, dx * WALK_SPEED * slow * dt, dz * WALK_SPEED * slow * dt);
-    p.walk += dt * 9;
+    p.walk += dt * (5 + 5 * slow * Math.min(1, Math.hypot(move, side)));   // the stride is slower when crouching or aiming
   }
+  // How much you are running (0 = standing still, 1 = full speed), eased in and out so the arms and body don't snap
+  const running = move || side ? Math.min(1, Math.hypot(move, side)) * slow : 0;
+  p.moveAmount += (running - p.moveAmount) * Math.min(1, dt * 8);
 
   // Knockback slides you away and slows down quickly
   if (p.kx || p.kz) {
@@ -2527,6 +2606,14 @@ function updateWorld(dt, time) {
   splatMesh.count = splats.length;
   splatMesh.instanceMatrix.needsUpdate = true;
 
+  // Dust drifts slowly with the wind and wraps around when it leaves the arena
+  for (let i = 0; i < DUST_COUNT; i++) {
+    dustPositions[i * 3] += (0.15 + Math.sin(time * 0.3 + i) * 0.1) * dt;
+    dustPositions[i * 3 + 1] += Math.sin(time * 0.7 + i * 1.3) * 0.05 * dt;
+    if (dustPositions[i * 3] > ARENA) dustPositions[i * 3] = -ARENA;
+  }
+  dustGeometry.attributes.position.needsUpdate = true;
+
   // Moving water, slowly flowing and flickering lava, grass in the wind
   wind.value = time;
   if (CASTLE) {
@@ -2541,19 +2628,28 @@ function updateWorld(dt, time) {
 // Soldier animation: legs walk, the upper body leans with where you look, the rifle kicks back
 function animateSoldier(p, time) {
   const { upper, rifle, flash } = p.model.userData;
-  upper.rotation.x = p.pitch * 0.5 - p.crouch * 0.15;   // lean forward a little when crouching
-  upper.position.y = 0.92 + Math.abs(Math.sin(p.walk)) * 0.02 + Math.sin(time * 1.5) * 0.005;   // breathing
+  const run = p.dead ? 0 : p.moveAmount;
+  // Lean forward into the run and when crouching, look up and down, twist a little with each stride, bob and breathe
+  upper.rotation.set(p.pitch * 0.5 - p.crouch * 0.15 - 0.1 * run * (1 - p.aim), Math.sin(p.walk) * 0.07 * run, 0);
+  upper.position.y = 0.92 + Math.abs(Math.cos(p.walk)) * 0.04 * run + Math.sin(time * 1.5) * 0.005;
+  p.model.userData.head.rotation.y = -Math.sin(p.walk) * 0.05 * run;
   rifle.position.z = -0.22 + p.recoil * 0.05;
   rifle.rotation.x = p.reload > 0 ? -0.6 : 0;   // tipped down while reloading
+  rifle.rotation.z = Math.sin(p.walk) * 0.07 * run;   // rocks with the stride
   flash.visible = p.flash > 0;
   flash.material.rotation = Math.random() * Math.PI;
   // First-person rifle: kicks back when firing, dips while reloading, sways when walking
   const view = p.viewSword;
   const reloadDip = p.reload > 0 ? Math.sin(Math.min(1, (RELOAD_TIME - p.reload) / RELOAD_TIME) * Math.PI) : 0;
   // Aiming brings the rifle up to the middle of your view; when it is all the way up you look through the scope
-  view.position.set(0.12 * (1 - p.aim), -0.13 + 0.06 * p.aim - reloadDip * 0.1 + Math.sin(p.walk * 2) * 0.003 * (1 - p.aim),
+  // It bobs with your steps and lags when you turn, but stays steady while aiming
+  const loose = 1 - p.aim;
+  view.position.set(0.12 * loose + (Math.sin(p.walk) * 0.012 * run - p.sway * 0.05) * loose,
+                    -0.13 + 0.06 * p.aim - reloadDip * 0.1 - Math.abs(Math.cos(p.walk)) * 0.014 * run * loose,
                     -0.3 + p.recoil * 0.03);
-  view.rotation.set(p.recoil * 0.06 * (1 - 0.7 * p.aim) - reloadDip * 0.5, 0, reloadDip * 0.4);
+  view.rotation.set(p.recoil * 0.06 * (1 - 0.7 * p.aim) - reloadDip * 0.5,
+                    p.sway * 0.4 * loose,
+                    reloadDip * 0.4 + Math.sin(p.walk) * 0.035 * run * loose);
   view.visible = !p.dead && p.aim < 0.9;
   p.hud.querySelector(".scope").style.opacity = Math.max(0, (p.aim - 0.6) / 0.4);
   p.hud.querySelector(".crosshair").style.opacity = p.aim > 0.3 ? 0 : 1;
@@ -2580,12 +2676,17 @@ function placePlayer(p, time) {
   } else {
     m.rotation.set(0, p.yaw, 0);
   }
-  // Walking: legs swing from the hip and the knee bends; the head bobs a little
+  // Weapon sway: when you turn, the weapon in your view lags behind a little
+  const turn = p.lastYaw === null ? 0 : p.yaw - p.lastYaw;
+  p.lastYaw = p.yaw;
+  p.sway = p.sway * 0.85 + Math.max(-0.08, Math.min(0.08, turn)) * 0.5;
+  // Running: legs swing from the hip and the knees bend. The stride is as big as how fast you run.
+  const run = p.dead ? 0 : p.moveAmount;
   const step = Math.sin(p.walk);
-  legL.hip.rotation.x = step * 0.6;
-  legR.hip.rotation.x = -step * 0.6;
-  legL.knee.rotation.x = -Math.max(0, -step) * 0.9;
-  legR.knee.rotation.x = -Math.max(0, step) * 0.9;
+  legL.hip.rotation.x = step * 0.7 * run;
+  legR.hip.rotation.x = -step * 0.7 * run;
+  legL.knee.rotation.x = -Math.max(0, -step) * 1.1 * run;
+  legR.knee.rotation.x = -Math.max(0, step) * 1.1 * run;
   if (!CASTLE && p.crouch > 0) {
     // Crouching: drop the body and fold the legs (thighs forward, shins back)
     m.position.y = p.y - 0.45 * p.crouch;
@@ -2596,28 +2697,72 @@ function placePlayer(p, time) {
   }
   placeCamera(p);
   if (!CASTLE) { animateSoldier(p, time); return; }
-  head.position.y = 1.66 + Math.abs(step) * 0.015;
-  // Sword arm: resting forward, or a chop from high above down to the front
-  if (p.swing > 0) {
-    const t = 1 - p.swing / 0.3;
-    swordArm.shoulder.rotation.x = 2.2 - t * t * 2.7;
-  } else {
-    swordArm.shoulder.rotation.x = 0.4 + Math.sin(time * 2) * 0.03;
+  const { upper, shieldArm } = m.userData;
+  // Upper body: bobs up and down twice per stride, leans into the run and twists a little with the legs
+  let twist = step * 0.14 * run;
+  let lean = -0.13 * run;
+  // Sword arm: held up in front in a guard, swinging a little with the stride.
+  // Attacking: lift the sword high behind the head, then slash down and across the body.
+  let armX = 0.55 - step * 0.25 * run + Math.sin(time * 2) * 0.02;
+  let armZ = -0.1, elbow = 1.15;
+  const attack = p.swing > 0 ? 1 - p.swing / 0.3 : -1;   // 0 → 1 through the attack
+  if (attack >= 0 && attack < 0.35) {
+    const k = attack / 0.35;
+    armX = lerp(armX, 2.7, k);
+    armZ = lerp(-0.1, -0.5, k);
+    elbow = lerp(1.15, 0.6, k);
+    twist += 0.35 * k;
+  } else if (attack >= 0.35) {
+    const k = Math.min(1, (attack - 0.35) / 0.45);
+    const e = 1 - (1 - k) * (1 - k);   // fast at the start, slowing at the end
+    armX = lerp(2.7, -0.2, e);
+    armZ = lerp(-0.5, 0.55, e);
+    elbow = lerp(0.6, 0.35, e);
+    twist += 0.35 - 0.75 * e;
+    lean -= 0.15 * Math.sin(k * Math.PI);
   }
-  swordArm.elbow.rotation.x = 0.9;
+  upper.position.y = upper.userData.baseY + Math.abs(Math.cos(p.walk)) * 0.045 * run - 0.02 * run;
+  upper.rotation.set(lean, twist, 0);
+  swordArm.shoulder.rotation.set(armX, 0, armZ);
+  swordArm.elbow.rotation.x = elbow;
+  // The shield arm swings the opposite way to the left leg; the head stays steadier than the body
+  shieldArm.shoulder.rotation.x = 0.5 + step * 0.35 * run;
+  head.rotation.set(-lean * 0.5, -twist * 0.6, 0);
   // The cape waves more when you walk
   const positions = cape.geometry.attributes.position;
   const rest = cape.userData.rest;
-  const moving = Math.min(1, Math.abs(Math.sin(p.walk * 0.5)) + 0.2);
+  const moving = 0.2 + run * 0.8;
   for (let i = 0; i < positions.count; i++) {
     const down = -rest[i * 3 + 1];   // 0 at the shoulders, 1.15 at the bottom
     positions.array[i * 3 + 2] = rest[i * 3 + 2] + down * down * (0.12 + moving * 0.12) * (1 + Math.sin(time * 5 + down * 4) * 0.2);
   }
   positions.needsUpdate = true;
-  // The sword in your own view swings down when you attack, and sways a little when walking
-  const chop = p.swing > 0 ? Math.sin((1 - p.swing / 0.3) * Math.PI) : 0;
-  p.viewSword.rotation.x = -0.85 - chop * 1.2;
-  p.viewSword.position.y = -0.2 + Math.sin(p.walk * 2) * 0.004;
+  // The sword in your own view: held up in front, bobbing with your steps.
+  // Attacking: pulled back up to the right, then slashed down and across to the left.
+  const view = p.viewSword;
+  let pose = VIEW_SWORD_IDLE;
+  if (attack >= 0 && attack < 0.35) pose = blendPose(VIEW_SWORD_IDLE, VIEW_SWORD_WINDUP, attack / 0.35);
+  else if (attack >= 0.35) {
+    const k = Math.min(1, (attack - 0.35) / 0.45);
+    pose = blendPose(VIEW_SWORD_WINDUP, VIEW_SWORD_SLASH, 1 - (1 - k) * (1 - k));
+  }
+  view.position.set(pose[0] + Math.sin(p.walk) * 0.016 * run - p.sway * 0.06,
+                    pose[1] - Math.abs(Math.cos(p.walk)) * 0.02 * run + 0.01 * run,
+                    pose[2]);
+  view.rotation.set(pose[3] + Math.sin(p.walk * 2) * 0.02 * run, pose[4] + p.sway * 0.6, pose[5] + Math.sin(p.walk) * 0.04 * run);
+}
+
+// Poses for the first-person sword: [x, y, z, tilt forward, turn, lean sideways]
+const VIEW_SWORD_IDLE = [0.22, -0.27, -0.5, -0.55, -0.3, 0.35];
+const VIEW_SWORD_WINDUP = [0.3, -0.13, -0.42, 0.25, -0.5, -0.7];
+const VIEW_SWORD_SLASH = [-0.12, -0.3, -0.52, -1.55, 0.35, 1.0];
+
+function lerp(a, b, t) {
+  return a + (b - a) * t;
+}
+
+function blendPose(a, b, t) {
+  return a.map((v, i) => lerp(v, b[i], t));
 }
 
 // Camera at eye height. When hit it shakes, and when dead it drops to the ground and tips over.
@@ -2628,9 +2773,11 @@ function placeCamera(p) {
     p.camera.position.set(p.x, p.y + 1.7 - fall * 1.4, p.z);
     p.camera.rotation.set(-fall * 0.6, p.yaw, fall * 0.9, "YXZ");
   } else {
-    p.camera.position.set(p.x + (Math.random() - 0.5) * shake, p.y + 1.7 - 0.55 * (p.crouch || 0) + (Math.random() - 0.5) * shake,
+    const run = p.onGround ? p.moveAmount * (1 - 0.8 * (p.aim || 0)) : 0;
+    const bob = Math.sin(p.walk * 2) * 0.03 * run;
+    p.camera.position.set(p.x + (Math.random() - 0.5) * shake, p.y + 1.7 - 0.55 * (p.crouch || 0) + bob + (Math.random() - 0.5) * shake,
                           p.z + (Math.random() - 0.5) * shake);
-    p.camera.rotation.set(p.pitch, p.yaw, 0, "YXZ");   // turn first, then look up or down
+    p.camera.rotation.set(p.pitch, p.yaw, Math.sin(p.walk) * 0.006 * run, "YXZ");   // turn first, then look up or down
   }
   const fov = 70 - (70 - AIM_FOV) * (p.dead ? 0 : p.aim || 0);
   if (p.camera.fov !== fov) {
@@ -2639,6 +2786,28 @@ function placeCamera(p) {
   }
   p.viewSword.visible = !p.dead;
 }
+
+// A last touch on the finished picture, like in films: more contrast and color, darker corners and fine grain
+const GRADE_SHADER = {
+  uniforms: { tDiffuse: { value: null }, time: { value: 0 } },
+  vertexShader: "varying vec2 vUv; void main() { vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+  fragmentShader: `
+    uniform sampler2D tDiffuse;
+    uniform float time;
+    varying vec2 vUv;
+    void main() {
+      vec3 c = texture2D(tDiffuse, vUv).rgb;
+      c = (c - 0.5) * 1.08 + 0.5;                                   // contrast
+      float grey = dot(c, vec3(0.299, 0.587, 0.114));
+      c = mix(vec3(grey), c, 1.12);                                 // color
+      float d = distance(vUv, vec2(0.5));
+      c *= 1.0 - smoothstep(0.45, 0.85, d) * 0.45;                  // darker corners
+      float n = fract(sin(dot(vUv * (time + 1.0), vec2(12.9898, 78.233))) * 43758.5453);
+      c += (n - 0.5) * 0.025;                                       // film grain
+      gl_FragColor = vec4(clamp(c, 0.0, 1.0), 1.0);
+    }`
+};
+const gradePasses = [];
 
 // ---------- Drawing: two halves of the screen, one camera each ----------
 // On computers each half also gets a "glow" effect (bloom), so fire, lava and torches shine.
@@ -2650,6 +2819,9 @@ const composers = players.map(p => {
   // Only really bright things glow (threshold 2): fire, lava and torch flames, not shiny armor
   composer.addPass(new UnrealBloomPass(new THREE.Vector2(256, 256), 0.6, 0.4, 2));
   composer.addPass(new OutputPass());
+  const grade = new ShaderPass(GRADE_SHADER);
+  gradePasses.push(grade);
+  composer.addPass(grade);
   return composer;
 });
 
@@ -2698,6 +2870,7 @@ function step(dt) {
 function loop() {
   const dt = Math.min(clock.getDelta(), 0.05);
   step(dt);
+  gradePasses.forEach(g => { g.uniforms.time.value = gameTime % 100; });
   const half = innerWidth / 2;
   renderer.setScissorTest(true);
   players.forEach((p, i) => {
