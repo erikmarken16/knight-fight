@@ -27,6 +27,9 @@
     /* Red edges of the screen when you get hit */
     .hit { position: absolute; inset: 0; opacity: 0; transition: opacity 0.3s;
            background: radial-gradient(ellipse at center, rgba(160, 0, 0, 0) 45%, rgba(160, 0, 0, 0.65) 100%); }
+    .ammo { position: absolute; right: 20px; bottom: 40px; font-size: 26px; font-weight: bold; text-shadow: 2px 2px 3px #000; }
+    .headshot { position: absolute; top: 38%; width: 100%; text-align: center; font-size: 30px; font-weight: bold;
+                color: #ff4a3a; text-shadow: 2px 2px 3px #000; opacity: 0; transition: opacity 0.2s; }
     #mouseHint { position: absolute; left: 50%; top: 60%; transform: translateX(-50%); display: flex;
                  padding: 10px 18px; border-radius: 10px; background: rgba(0, 0, 0, 0.55); font-size: 18px; white-space: nowrap; }
     #divider { position: fixed; top: 0; left: 50%; width: 4px; height: 100%; margin-left: -2px; background: #111; }
@@ -61,6 +64,7 @@
       .bar { width: 160px; }
       .health { top: 32px; height: 14px; }
       .fire { top: 52px; width: 100px; }
+      .ammo { font-size: 16px; bottom: auto; top: 62px; right: auto; left: 16px; }   /* under the health bars */
       #message h1 { font-size: 40px; }
     }
     @media (pointer: coarse) and (orientation: portrait) {
@@ -77,6 +81,8 @@
     <div class="bar health"><div></div></div>
     <div class="bar fire"><div></div></div>
     <div class="crosshair"></div>
+    <div class="ammo"></div>
+    <div class="headshot">HEADSHOT!</div>
   </div>
   <div id="hud2" class="hud">
     <div class="hit"></div>
@@ -84,17 +90,15 @@
     <div class="bar health"><div></div></div>
     <div class="bar fire"><div></div></div>
     <div class="crosshair"></div>
+    <div class="ammo"></div>
+    <div class="headshot">HEADSHOT!</div>
   </div>
   <div id="divider"></div>
-  <div id="help">
-    Player 1: W A S D move, mouse look, left click sword, right click or E fireball, Space jump &nbsp;|&nbsp;
-    Player 2: ↑ ↓ walk, ← → turn, - jump, Enter sword, Right Shift fireball &nbsp;|&nbsp;
-    Hold jump in a waterfall to swim up &nbsp;|&nbsp; R restart, Esc menu
-  </div>
+  <div id="help"></div>
   <div id="message"><h1></h1><p>Press R (or ↻) to play again, Esc (or ☰) for the menu</p></div>
   <div id="touch"></div>
   <div id="turnPhone">Turn your phone sideways to play</div>
-  <div id="loading">Building the castle...</div>
+  <div id="loading">Building the battlefield...</div>
 
 <!-- three.js draws the 3D world. The import map tells the browser where "three" is. -->
 <script type="importmap">
@@ -144,6 +148,22 @@ const MOUSE_SPEED = 0.0025;
 // Phones get a lighter version (smaller textures, fewer grass blades, no glow effect) so they run smoothly
 const isPhone = matchMedia("(pointer: coarse)").matches;
 const TEXTURE_SIZE = isPhone ? 256 : 512;
+
+// Which 3D game: "castle" (knights with swords and fireballs) or "modern" (soldiers with rifles and grenades)
+const MODE = new URLSearchParams(location.search).get("mode") === "modern" ? "modern" : "castle";
+const CASTLE = MODE === "castle";
+
+// Modern weapons
+const RIFLE_BODY_DAMAGE = 12;
+const RIFLE_HEAD_DAMAGE = 34;      // headshots hurt almost three times as much
+const RIFLE_FIRE_TIME = 0.11;      // seconds between shots while holding the trigger
+const RIFLE_AMMO = 30;
+const RELOAD_TIME = 1.6;
+const GRENADE_COOLDOWN = 4;
+const GRENADE_FUSE = 1.8;          // seconds until it goes off
+const GRENADE_RADIUS = 4.5;
+const GRENADE_DAMAGE = 55;         // right next to it; less further away
+const MEDKIT_HEAL = 25;
 
 const keys = {};
 addEventListener("keydown", e => {
@@ -215,7 +235,7 @@ function makePad(c, which) {
               holdKey("◀", c.left), holdKey("▼", c.back), holdKey("▶", c.right));
   const acts = document.createElement("div");
   acts.className = "acts";
-  acts.append(holdKey("🔥", c.fire), document.createElement("span"), holdKey("⤒", c.jump), holdKey("⚔", c.attack));
+  acts.append(holdKey(CASTLE ? "🔥" : "💣", c.fire), document.createElement("span"), holdKey("⤒", c.jump), holdKey(CASTLE ? "⚔" : "🎯", c.attack));
   pad.append(dpad, acts);
   return pad;
 }
@@ -255,11 +275,13 @@ const scene = new THREE.Scene();
 
 // ---------- Sky and sunlight ----------
 // A physically based sky: blue overhead, hazy near the horizon, with a real sun in it.
-const sunDirection = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(55), THREE.MathUtils.degToRad(140));
+// The castle has a high midday sun. The modern city has a low golden sun with long shadows, late in the day.
+const sunDirection = new THREE.Vector3().setFromSphericalCoords(1, THREE.MathUtils.degToRad(CASTLE ? 55 : 76),
+                                                                THREE.MathUtils.degToRad(CASTLE ? 140 : 215));
 const sky = new Sky();
 const skyUniforms = sky.material.uniforms;
-skyUniforms.turbidity.value = 5;
-skyUniforms.rayleigh.value = 1.4;
+skyUniforms.turbidity.value = CASTLE ? 5 : 9;
+skyUniforms.rayleigh.value = CASTLE ? 1.4 : 2.6;
 skyUniforms.mieCoefficient.value = 0.004;
 skyUniforms.mieDirectionalG.value = 0.85;
 skyUniforms.sunPosition.value.copy(sunDirection);
@@ -272,19 +294,21 @@ scene.environment = pmrem.fromScene(envScene).texture;
 sky.scale.setScalar(900);
 scene.add(sky);
 
-const HAZE = new THREE.Color("#c9d9e6");
-scene.fog = new THREE.Fog(HAZE, 45, 160);
+const HAZE = new THREE.Color(CASTLE ? "#c9d9e6" : "#d8b892");
+scene.fog = new THREE.Fog(HAZE, CASTLE ? 45 : 35, CASTLE ? 160 : 140);
 
-const sun = new THREE.DirectionalLight("#fff1dc", 3.2);
+const sun = new THREE.DirectionalLight(CASTLE ? "#fff1dc" : "#ffc98f", CASTLE ? 3.2 : 3.6);
 sun.position.copy(sunDirection).multiplyScalar(45);
 sun.castShadow = true;
 sun.shadow.mapSize.setScalar(isPhone ? 1024 : 4096);
-Object.assign(sun.shadow.camera, { left: -27, right: 27, top: 27, bottom: -27, near: 1, far: 110 });
+if (!CASTLE) sun.position.copy(sunDirection).multiplyScalar(70);   // a low sun needs to be further away to light everything
+const shadowSize = CASTLE ? 27 : 34;
+Object.assign(sun.shadow.camera, { left: -shadowSize, right: shadowSize, top: shadowSize, bottom: -shadowSize, near: 1, far: CASTLE ? 110 : 160 });
 sun.shadow.bias = -0.0004;
 sun.shadow.normalBias = 0.03;
-sun.shadow.camera.layers.enableAll();   // the knights live on their own layers, but should still cast shadows
+sun.shadow.camera.layers.enableAll();   // the fighters live on their own layers, but should still cast shadows
 scene.add(sun);
-scene.add(new THREE.HemisphereLight("#cfe3ff", "#4d5b33", 0.45));
+scene.add(CASTLE ? new THREE.HemisphereLight("#cfe3ff", "#4d5b33", 0.45) : new THREE.HemisphereLight("#ffdcb5", "#4a4038", 0.55));
 
 // ---------- Textures painted in code ----------
 // Each surface gets a color picture and a "normal map": a picture that tells the light where the surface
@@ -484,19 +508,30 @@ function waterTextureMaker() {
   return toTexture(c, true);
 }
 
-const STONE = stoneTextures();
-const GRASS = grassTextures();
-const ROOF = roofTextures();
-const MAIL = chainmailTextures();
-const lavaTexture = lavaTextureMaker();
-const waterTexture = waterTextureMaker();
+// Only paint the textures the chosen mode needs (painting them takes a moment)
+const STONE = CASTLE ? stoneTextures() : null;
+const GRASS = CASTLE ? grassTextures() : null;
+const ROOF = CASTLE ? roofTextures() : null;
+const MAIL = CASTLE ? chainmailTextures() : null;
+const lavaTexture = CASTLE ? lavaTextureMaker() : null;
+const waterTexture = CASTLE ? waterTextureMaker() : null;
 
-// A material that uses a texture set, repeated a number of times across the surface
+// A material that uses a texture set, repeated a number of times across the surface.
+// Materials are remembered and reused, so a hundred buildings don't each get their own copy of the pictures.
+const materialCache = new Map();
+let textureSetNumber = 0;
 function textured(set, repeatX, repeatY, extra = {}) {
+  if (!set.id) set.id = ++textureSetNumber;
+  repeatX = Math.round(repeatX * 4) / 4;
+  repeatY = Math.round(repeatY * 4) / 4;
+  const key = set.id + "|" + repeatX + "|" + repeatY + "|" + JSON.stringify(extra);
+  if (materialCache.has(key)) return materialCache.get(key);
   const map = set.map.clone();
   const normalMap = set.normalMap.clone();
   for (const t of [map, normalMap]) { t.needsUpdate = true; t.repeat.set(repeatX, repeatY); }
-  return new THREE.MeshStandardMaterial({ map, normalMap, roughness: 0.9, ...extra });
+  const material = new THREE.MeshStandardMaterial({ map, normalMap, roughness: 0.9, ...extra });
+  materialCache.set(key, material);
+  return material;
 }
 
 // ---------- The arena ----------
@@ -509,6 +544,20 @@ function addBox(x, y, z, w, h, d, material, parent = scene) {
   return box;
 }
 
+// What both arenas fill in: things to stand on, and (only in the castle) lava, waterfalls and pools.
+// Platforms are { x, z, w, d, h } where h is how high the top is; "bottom" is for things that float.
+const platforms = [];
+const lavaPools = [];
+const waterfalls = [];
+const waterPools = [];
+const lavaLights = [];
+const flames = [];
+const clouds = [];
+let lavaMaterial = null;
+const wind = { value: 0 };   // time, for grass blowing in the wind
+
+// ---------- The medieval arena: a castle courtyard ----------
+function buildCastle() {
 const ground = new THREE.Mesh(new THREE.PlaneGeometry(ARENA * 2, ARENA * 2), textured(GRASS, 10, 10, { roughness: 1 }));
 ground.rotation.x = -Math.PI / 2;
 ground.receiveShadow = true;
@@ -548,9 +597,8 @@ for (const x of [-1, 1]) for (const z of [-1, 1]) {
   scene.add(flag);
 }
 
-// Platforms you can jump up on: { x, z, w, d, h } where h is how high the top is.
-// "bottom" is for floating stones that don't reach the ground.
-const platforms = [
+// Platforms you can jump up on
+platforms.push(
   // Big blocks in the corners, each with a higher block on top
   { x: -10, z: -10, w: 5, d: 5, h: 1.2 }, { x: 10, z: 10, w: 5, d: 5, h: 1.2 },
   { x: 10, z: -10, w: 5, d: 5, h: 1.2 }, { x: -10, z: 10, w: 5, d: 5, h: 1.2 },
@@ -566,16 +614,16 @@ const platforms = [
   // Low walls to hide behind and jump over
   { x: -6, z: -15, w: 3, d: 1.2, h: 1.0 }, { x: 6, z: 15, w: 3, d: 1.2, h: 1.0 },
   { x: -15, z: 6, w: 1.2, d: 4, h: 1.4 }, { x: 15, z: -6, w: 1.2, d: 4, h: 1.4 }
-];
+);
 
 // Waterfalls in the middle of every wall. Stand in one and hold jump to swim up,
 // then step sideways onto one of the high ledges next to it. "along" says which way the wall runs.
-const waterfalls = [
+waterfalls.push(
   { x: 0, z: -ARENA + 0.6, along: "x", width: 3 },
   { x: 0, z: ARENA - 0.6, along: "x", width: 3 },
   { x: -ARENA + 0.6, z: 0, along: "z", width: 3 },
   { x: ARENA - 0.6, z: 0, along: "z", width: 3 }
-];
+);
 for (const w of waterfalls) {
   for (const side of [-1, 1]) {
     const reach = w.width / 2 + 2;
@@ -594,13 +642,12 @@ for (const p of platforms) {
 }
 
 // Lava pools: glowing, slowly flowing, and they bounce you up and hurt
-const lavaPools = [
+lavaPools.push(
   { x: -12, z: 0, w: 5, d: 7 },
   { x: 12, z: 0, w: 5, d: 7 }
-];
-const lavaMaterial = new THREE.MeshStandardMaterial({ map: lavaTexture, emissive: "#ffffff", emissiveMap: lavaTexture,
-                                                      emissiveIntensity: 3, roughness: 0.6 });
-const lavaLights = [];
+);
+lavaMaterial = new THREE.MeshStandardMaterial({ map: lavaTexture, emissive: "#ffffff", emissiveMap: lavaTexture,
+                                                emissiveIntensity: 3, roughness: 0.6 });
 for (const pool of lavaPools) {
   const lava = new THREE.Mesh(new THREE.PlaneGeometry(pool.w, pool.d), lavaMaterial);
   lava.rotation.x = -Math.PI / 2;
@@ -618,15 +665,10 @@ for (const pool of lavaPools) {
   lavaLights.push(light);
 }
 
-function onLava(x, z) {
-  return lavaPools.some(p => Math.abs(x - p.x) < p.w / 2 && Math.abs(z - p.z) < p.d / 2);
-}
-
 // Water: curtains pouring down the walls into shiny pools
 const waterMaterial = new THREE.MeshStandardMaterial({ map: waterTexture, transparent: true, opacity: 0.88, roughness: 0.1,
                                                        metalness: 0.1, side: THREE.DoubleSide, depthWrite: false });
 const poolMaterial = new THREE.MeshStandardMaterial({ color: "#1d5a8f", roughness: 0.04, metalness: 0.3, transparent: true, opacity: 0.92 });
-const waterPools = [];
 for (const w of waterfalls) {
   const inward = w.along === "x" ? new THREE.Vector3(0, 0, -Math.sign(w.z)) : new THREE.Vector3(-Math.sign(w.x), 0, 0);
   for (const offset of [-0.55, 0]) {   // a curtain against the wall and one in front, so it looks thick
@@ -642,6 +684,403 @@ for (const w of waterfalls) {
   scene.add(pool);
   waterPools.push({ x: pool.position.x, z: pool.position.z, r: 2.4 });
 }
+}   // end of buildCastle
+
+// ---------- The modern arena: a fort in a ruined city at sunset ----------
+// Textures for the city, painted in code like the castle ones
+function asphaltTextures() {
+  const s = TEXTURE_SIZE, rand = seeded(13);
+  const [color, cg] = makeCanvas(s);
+  const [height, hg] = makeCanvas(s);
+  cg.fillStyle = "#3b3b3d";
+  cg.fillRect(0, 0, s, s);
+  hg.fillStyle = "#808080";
+  hg.fillRect(0, 0, s, s);
+  speckle(cg, s, rand, s * 18, ["#2a2a2c", "#4d4d50", "#58585b", "#333"], 0.5, 1.6, 0.8);   // gravel
+  speckle(hg, s, rand, s * 18, ["#000", "#fff"], 0.5, 1.4, 0.5);
+  speckle(cg, s, rand, 30, ["#2b2b2d", "#454547"], 20, 60, 0.25);                               // patches
+  // Cracks
+  cg.strokeStyle = "#1c1c1d";
+  hg.strokeStyle = "#000";
+  for (let i = 0; i < 10; i++) {
+    let x = rand() * s, y = rand() * s;
+    for (const g of [cg, hg]) { g.lineWidth = 1.5; g.beginPath(); g.moveTo(x, y); }
+    for (let j = 0; j < 8; j++) {
+      x += (rand() - 0.5) * 40;
+      y += (rand() - 0.5) * 40;
+      cg.lineTo(x, y);
+      hg.lineTo(x, y);
+    }
+    cg.stroke();
+    hg.stroke();
+  }
+  return { map: toTexture(color, true), normalMap: toTexture(normalFromHeight(height, 3), false) };
+}
+
+function concreteTextures(base) {
+  const s = TEXTURE_SIZE, rand = seeded(31);
+  const [color, cg] = makeCanvas(s);
+  const [height, hg] = makeCanvas(s);
+  cg.fillStyle = base;
+  cg.fillRect(0, 0, s, s);
+  hg.fillStyle = "#808080";
+  hg.fillRect(0, 0, s, s);
+  speckle(cg, s, rand, s * 6, ["#000", "#fff"], 0.5, 1.5, 0.12);
+  speckle(cg, s, rand, 40, ["#3d3a35", "#5a5246"], 15, 60, 0.12);   // dirt and water stains
+  speckle(hg, s, rand, s * 8, ["#000", "#fff"], 0.5, 2, 0.35);
+  // Joints between the concrete slabs
+  cg.fillStyle = "rgba(0, 0, 0, 0.35)";
+  hg.fillStyle = "#000";
+  for (const g of [cg, hg]) { g.fillRect(0, 0, s, 3); g.fillRect(0, 0, 3, s); }
+  return { map: toTexture(color, true), normalMap: toTexture(normalFromHeight(height, 2.5), false) };
+}
+
+// A wall of a building: plaster or brick with rows of windows (one window per texture)
+function facadeTextures(wallColor) {
+  const s = TEXTURE_SIZE / 2, rand = seeded(19);
+  const [color, cg] = makeCanvas(s);
+  const [height, hg] = makeCanvas(s);
+  cg.fillStyle = wallColor;
+  cg.fillRect(0, 0, s, s);
+  hg.fillStyle = "#909090";
+  hg.fillRect(0, 0, s, s);
+  speckle(cg, s, rand, s * 5, ["#000", "#fff"], 0.5, 1.4, 0.12);
+  speckle(cg, s, rand, 12, ["#2b2620"], 10, 40, 0.15);
+  // Window: frame, dark glass with a sky reflection, a sill below
+  const wx = s * 0.25, wy = s * 0.2, ww = s * 0.5, wh = s * 0.55;
+  cg.fillStyle = "#d9d4cb";
+  cg.fillRect(wx - 5, wy - 5, ww + 10, wh + 10);
+  const glass = cg.createLinearGradient(wx, wy, wx + ww, wy + wh);
+  glass.addColorStop(0, "#5d7891");
+  glass.addColorStop(0.5, "#1f2a35");
+  glass.addColorStop(1, "#33424f");
+  cg.fillStyle = glass;
+  cg.fillRect(wx, wy, ww, wh);
+  if (wallColor === "#8f6f5a" || wallColor === "#7d6a58") {   // these buildings have broken windows
+    cg.fillStyle = "#0b0d10";
+    cg.beginPath();
+    cg.moveTo(wx + ww * 0.6, wy);
+    cg.lineTo(wx + ww, wy);
+    cg.lineTo(wx + ww, wy + wh * 0.5);
+    cg.lineTo(wx + ww * 0.75, wy + wh * 0.3);
+    cg.fill();
+  }
+  cg.fillStyle = "#d9d4cb";
+  cg.fillRect(wx + ww / 2 - 2, wy, 4, wh);
+  cg.fillRect(wx, wy + wh / 2 - 2, ww, 4);
+  cg.fillStyle = "#bfb9ae";
+  cg.fillRect(wx - 10, wy + wh + 5, ww + 20, 8);
+  // Height: the window is set back into the wall, the sill sticks out
+  hg.fillStyle = "#fff";
+  hg.fillRect(wx - 5, wy - 5, ww + 10, wh + 10);
+  hg.fillStyle = "#000";
+  hg.fillRect(wx, wy, ww, wh);
+  hg.fillStyle = "#fff";
+  hg.fillRect(wx - 10, wy + wh + 5, ww + 20, 8);
+  return { map: toTexture(color, true), normalMap: toTexture(normalFromHeight(height, 4), false) };
+}
+
+// Shipping container sides: deep ridges (the color comes from the material)
+function corrugatedTextures() {
+  const s = 256, rand = seeded(23);
+  const [color, cg] = makeCanvas(s);
+  const [height, hg] = makeCanvas(s);
+  cg.fillStyle = "#c8c8c8";
+  cg.fillRect(0, 0, s, s);
+  for (let x = 0; x < s; x++) {
+    const v = Math.round(128 + Math.sin(x / s * Math.PI * 2 * 12) * 120);
+    hg.fillStyle = "rgb(" + v + "," + v + "," + v + ")";
+    hg.fillRect(x, 0, 1, s);
+    const shadeValue = Math.round(185 + Math.sin(x / s * Math.PI * 2 * 12) * 30);
+    cg.fillStyle = "rgb(" + shadeValue + "," + shadeValue + "," + shadeValue + ")";
+    cg.fillRect(x, 0, 1, s);
+  }
+  speckle(cg, s, rand, 120, ["#6b3a1f", "#8a4b25", "#3a2a1f"], 2, 10, 0.45);   // rust
+  return { map: toTexture(color, true), normalMap: toTexture(normalFromHeight(height, 6), false) };
+}
+
+function crateTextures() {
+  const s = 256, rand = seeded(29);
+  const [color, cg] = makeCanvas(s);
+  const [height, hg] = makeCanvas(s);
+  // Planks
+  for (let i = 0; i < 6; i++) {
+    const tone = 120 + rand() * 30;
+    cg.fillStyle = "rgb(" + tone + "," + (tone * 0.78) + "," + (tone * 0.5) + ")";
+    cg.fillRect(0, i * s / 6, s, s / 6);
+    cg.fillStyle = "rgba(60, 35, 15, 0.6)";
+    cg.fillRect(0, i * s / 6, s, 2);
+    hg.fillStyle = "#aaa";
+    hg.fillRect(0, i * s / 6 + 2, s, s / 6 - 2);
+  }
+  for (let i = 0; i < 200; i++) {   // wood grain
+    cg.strokeStyle = "rgba(70, 45, 20, 0.25)";
+    cg.beginPath();
+    const y = rand() * s;
+    cg.moveTo(0, y);
+    cg.bezierCurveTo(s / 3, y + (rand() - 0.5) * 6, s * 2 / 3, y + (rand() - 0.5) * 6, s, y);
+    cg.stroke();
+  }
+  // Frame and a diagonal brace
+  cg.strokeStyle = "#5b3d1f";
+  hg.strokeStyle = "#fff";
+  cg.lineWidth = hg.lineWidth = 22;
+  for (const g of [cg, hg]) {
+    g.strokeRect(11, 11, s - 22, s - 22);
+    g.beginPath();
+    g.moveTo(20, s - 20);
+    g.lineTo(s - 20, 20);
+    g.stroke();
+  }
+  return { map: toTexture(color, true), normalMap: toTexture(normalFromHeight(height, 3), false) };
+}
+
+function buildCity() {
+  const ASPHALT = asphaltTextures();
+  const CONCRETE = concreteTextures("#a39c90");
+  const SIDEWALK = concreteTextures("#8e8a83");
+  const facades = ["#b9a58a", "#8f6f5a", "#a8a8a2", "#7d6a58"].map(c => facadeTextures(c));
+  const METAL = corrugatedTextures();
+  const CRATE = crateTextures();
+
+  // Ground: cracked asphalt, sidewalks along the edges, and road markings
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(ARENA * 2, ARENA * 2), textured(ASPHALT, 8, 8, { roughness: 0.95 }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  scene.add(ground);
+  const outside = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), textured(ASPHALT, 80, 80, { roughness: 0.95 }));
+  outside.rotation.x = -Math.PI / 2;
+  outside.position.y = -0.03;
+  outside.receiveShadow = true;
+  scene.add(outside);
+  const sidewalk = textured(SIDEWALK, 8, 0.6);
+  for (const side of [-1, 1]) {
+    const a = new THREE.Mesh(new THREE.BoxGeometry(ARENA * 2, 0.14, 2.6), sidewalk);
+    a.position.set(0, 0.07, side * (ARENA - 1.3));
+    const b = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.14, ARENA * 2 - 5.2), sidewalk);
+    b.position.set(side * (ARENA - 1.3), 0.07, 0);
+    for (const m of [a, b]) { m.receiveShadow = true; scene.add(m); }
+  }
+  const paint = new THREE.MeshStandardMaterial({ color: "#d9b43a", roughness: 0.8, polygonOffset: true, polygonOffsetFactor: -1 });
+  for (let i = -16; i <= 16; i += 4) {
+    for (const [w, d, x, z] of [[0.15, 2, 0, i], [2, 0.15, i, 0]]) {
+      const line = new THREE.Mesh(new THREE.PlaneGeometry(w, d), paint);
+      line.rotation.x = -Math.PI / 2;
+      line.position.set(x, 0.011, z);
+      scene.add(line);
+    }
+  }
+  // Puddles that reflect the sunset sky
+  const puddleMaterial = new THREE.MeshStandardMaterial({ color: "#1b1d20", roughness: 0.02, metalness: 0.6, polygonOffset: true, polygonOffsetFactor: -1 });
+  for (const [x, z, r] of [[-6, 12, 1.2], [6, -12, 1.2], [12, -3, 0.9], [-12, 3, 0.9], [3, 16, 0.7], [-3, -16, 0.7]]) {
+    const puddle = new THREE.Mesh(new THREE.CircleGeometry(r, 24), puddleMaterial);
+    puddle.rotation.x = -Math.PI / 2;
+    puddle.scale.set(1.4, 1, 1);
+    puddle.position.set(x, 0.012, z);
+    scene.add(puddle);
+  }
+
+  // Tall buildings all around the arena (you can't get past them), and a city skyline far away
+  const rand = seeded(91);
+  const facadeMaterials = facades.map(f => (w, h) => textured(f, Math.max(1, Math.round(w / 3)), Math.max(1, Math.round(h / 3)), { roughness: 0.85 }));
+  const roofDark = new THREE.MeshStandardMaterial({ color: "#3a3936", roughness: 0.9 });
+  function building(x, z, w, d, h, style) {
+    const mats = [facadeMaterials[style](d, h), facadeMaterials[style](d, h), roofDark, roofDark,
+                  facadeMaterials[style](w, h), facadeMaterials[style](w, h)];
+    const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mats);
+    b.position.set(x, h / 2, z);
+    b.castShadow = b.receiveShadow = true;
+    scene.add(b);
+    // A roof edge and a couple of air conditioners on top
+    addBox(x, h + 0.25, z, w + 0.3, 0.5, d + 0.3, roofDark).castShadow = false;
+    for (let i = 0; i < 2; i++) {
+      addBox(x + (rand() - 0.5) * (w - 2), h + 0.9, z + (rand() - 0.5) * (d - 2), 1.2, 0.8, 0.9, textured(METAL, 0.5, 0.3, { color: "#9aa0a6", metalness: 0.6, roughness: 0.5 }));
+    }
+  }
+  for (const side of [-1, 1]) {
+    for (let along = -ARENA - 4; along < ARENA + 4;) {
+      const w = 6 + rand() * 5, h = 8 + rand() * 9, d = 7, style = Math.floor(rand() * 4);
+      building(along + w / 2, side * (ARENA + d / 2), w, d, h, style);
+      building(side * (ARENA + d / 2), along + w / 2, d, w, h, style);
+      along += w + 0.2;
+    }
+  }
+  for (let i = 0; i < (isPhone ? 30 : 60); i++) {
+    const angle = rand() * Math.PI * 2, dist = 55 + rand() * 80;
+    const w = 8 + rand() * 12, h = 15 + rand() * 45;
+    building(Math.cos(angle) * dist, Math.sin(angle) * dist, w, w, h, Math.floor(rand() * 4));
+  }
+
+  // The fort and the cover inside it. Everything is mirrored, so both sides of the battle are fair.
+  const mirror = list => list.flatMap(o => [o, { ...o, x: -o.x, z: -o.z }]);
+  const containers = mirror([
+    { x: -9, z: 7, w: 6, d: 2.5, h: 2.6, color: "#8c2f1f" },
+    { x: 9.5, z: 4, w: 2.5, d: 6, h: 2.6, color: "#1f4f7a" },
+    { x: -15.5, z: -1, w: 2.5, d: 6, h: 2.6, color: "#3e5e2a" }
+  ]);
+  const crates = mirror([
+    { x: -5.4, z: 7.6, w: 1.3, d: 1.3, h: 1.2 },       // step up onto the red container
+    { x: 9.5, z: 7.75, w: 1.3, d: 1.3, h: 1.2 },       // and the blue one
+    { x: -15.5, z: 2.75, w: 1.3, d: 1.3, h: 1.2 },
+    { x: 4, z: 15, w: 1.3, d: 1.3, h: 1.2 },
+    // Stacked crates leading up to the watchtower
+    { x: -12, z: 14.4, w: 1.4, d: 1.4, h: 1.1 },
+    { x: -14.2, z: 14.4, w: 1.4, d: 1.4, h: 2.2 },
+    { x: -14.2, z: 16.5, w: 1.4, d: 1.4, h: 3.3 }
+  ]);
+  const sandbags = mirror([
+    { x: 0, z: 9.5, w: 5, d: 0.9, h: 1.0 },
+    { x: -14, z: 10, w: 0.9, d: 4, h: 1.0 },
+    { x: 15, z: 9, w: 3.5, d: 0.9, h: 1.0 }
+  ]);
+  const barriers = mirror([
+    { x: 5.5, z: 12, w: 3, d: 0.7, h: 1.0 },
+    { x: -4.5, z: 3.5, w: 0.7, d: 3, h: 1.0 }
+  ]);
+  // The command building in the middle, with concrete steps up to its flat roof
+  const blocks = mirror([
+    { x: -3, z: 3.4, w: 1.6, d: 1.6, h: 1.2 },
+    { x: -1, z: 3.4, w: 1.6, d: 1.6, h: 2.4 },
+    { x: 1, z: 3.4, w: 1.6, d: 1.6, h: 3.6 }
+  ]);
+  const commandPost = { x: 0, z: 0, w: 8, d: 5, h: 4.5 };
+  // Watchtowers: a platform on legs that you can walk under
+  const towers = mirror([{ x: -16.5, z: 16.5, w: 3, d: 3, h: 4.4, bottom: 4.05 }]);
+  // Burnt-out cars to hop onto
+  const cars = mirror([{ x: 13, z: 13, w: 2, d: 4.2, h: 1.3 }]);
+  platforms.push(...containers, ...crates, ...sandbags, ...barriers, ...blocks, commandPost, ...towers, ...cars);
+
+  for (const c of containers) {
+    const long = Math.max(c.w, c.d);
+    const box = addBox(c.x, c.h / 2, c.z, c.w, c.h, c.d,
+      textured(METAL, long / 1.2, 1, { color: c.color, metalness: 0.55, roughness: 0.55 }));
+    // Door bars on the end
+    const end = c.w > c.d ? [c.x + c.w / 2 + 0.01, c.z] : [c.x, c.z + c.d / 2 + 0.01];
+    for (const off of [-0.5, -0.2, 0.2, 0.5]) {
+      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, c.h - 0.2, 6),
+                                 new THREE.MeshStandardMaterial({ color: "#555", metalness: 0.8, roughness: 0.4 }));
+      bar.position.set(end[0] + (c.w > c.d ? 0 : off), c.h / 2, end[1] + (c.w > c.d ? off : 0));
+      scene.add(bar);
+    }
+    box.castShadow = true;
+  }
+  const crateMaterial = textured(CRATE, 1, 1, { roughness: 0.85 });
+  for (const c of crates) {
+    // A stack of crates as tall as the platform
+    const count = Math.round(c.h / 1.1) || 1;
+    for (let i = 0; i < count; i++) {
+      const size = c.h / count;
+      const crate = addBox(c.x, size * (i + 0.5), c.z, c.w, size, c.d, crateMaterial);
+      crate.rotation.y = (i % 2) * 0.08;
+    }
+  }
+  // Sandbags: rows of soft lumpy bags. One InstancedMesh draws all of them.
+  const bagGeometry = new THREE.SphereGeometry(1, 12, 8);
+  bagGeometry.scale(0.32, 0.18, 0.23);   // a fat, slightly flattened bag
+  const bagSlots = [];
+  for (const b of sandbags) {
+    const along = b.w > b.d ? "x" : "z";
+    const length = Math.max(b.w, b.d), rows = 3;
+    for (let r = 0; r < rows; r++) {
+      const n = Math.floor(length / 0.55);
+      for (let i = 0; i < n; i++) {
+        const t = -length / 2 + 0.3 + i * (length - 0.6) / Math.max(1, n - 1) + (r % 2) * 0.15;
+        bagSlots.push([along === "x" ? b.x + t : b.x, 0.17 + r * 0.32, along === "x" ? b.z : b.z + t, along === "x" ? 0 : Math.PI / 2]);
+      }
+    }
+  }
+  const bags = new THREE.InstancedMesh(bagGeometry, new THREE.MeshStandardMaterial({ color: "#a08a63", roughness: 1 }), bagSlots.length);
+  const place = new THREE.Object3D();
+  bagSlots.forEach(([x, y, z, rot], i) => {
+    place.position.set(x, y, z);
+    place.rotation.set(0, rot + (rand() - 0.5) * 0.2, (rand() - 0.5) * 0.1);
+    place.scale.setScalar(0.9 + rand() * 0.2);
+    place.updateMatrix();
+    bags.setMatrixAt(i, place.matrix);
+  });
+  bags.castShadow = bags.receiveShadow = true;
+  scene.add(bags);
+  // Concrete road barriers with a sloped "jersey" shape
+  const barrierShape = new THREE.Shape();
+  barrierShape.moveTo(-0.35, 0);
+  barrierShape.lineTo(0.35, 0);
+  barrierShape.lineTo(0.22, 0.3);
+  barrierShape.lineTo(0.12, 1.0);
+  barrierShape.lineTo(-0.12, 1.0);
+  barrierShape.lineTo(-0.22, 0.3);
+  barrierShape.lineTo(-0.35, 0);
+  const concrete = textured(CONCRETE, 1, 1, { roughness: 0.9 });
+  for (const b of barriers) {
+    const length = Math.max(b.w, b.d);
+    const g = new THREE.ExtrudeGeometry(barrierShape, { depth: length, bevelEnabled: false });
+    g.translate(0, 0, -length / 2);
+    const m = new THREE.Mesh(g, concrete);
+    m.position.set(b.x, 0, b.z);
+    if (b.w > b.d) m.rotation.y = Math.PI / 2;
+    m.castShadow = m.receiveShadow = true;
+    scene.add(m);
+  }
+  for (const b of blocks) addBox(b.x, b.h / 2, b.z, b.w, b.h, b.d, textured(CONCRETE, 0.5, b.h / 3));
+  // The command post: concrete, with windows, a low wall around the roof and a radio mast
+  const post = commandPost;
+  const postMats = [0, 1, 2, 3, 4, 5].map(i => i === 2 || i === 3 ? textured(CONCRETE, 2, 1.3) : facadeMaterials[2](i < 2 ? post.d : post.w, post.h));
+  const postMesh = new THREE.Mesh(new THREE.BoxGeometry(post.w, post.h, post.d), postMats);
+  postMesh.position.set(post.x, post.h / 2, post.z);
+  postMesh.castShadow = postMesh.receiveShadow = true;
+  scene.add(postMesh);
+  for (const [x, z, w, d] of [[0, post.d / 2 - 0.1, post.w, 0.2], [0, -post.d / 2 + 0.1, post.w, 0.2]]) {
+    addBox(x, post.h + 0.2, z, w, 0.4, d, textured(CONCRETE, 2, 0.2));
+  }
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, 4, 6), new THREE.MeshStandardMaterial({ color: "#777", metalness: 0.8, roughness: 0.4 }));
+  mast.position.set(2.8, post.h + 2, -1.5);
+  scene.add(mast);
+  // Watchtowers: four legs, a floor, railings and a tin roof
+  const wood = new THREE.MeshStandardMaterial({ color: "#5d4630", roughness: 0.9 });
+  const tin = textured(METAL, 2, 1, { color: "#7b7f84", metalness: 0.6, roughness: 0.5, side: THREE.DoubleSide });
+  for (const t of towers) {
+    for (const lx of [-1, 1]) for (const lz of [-1, 1]) {
+      addBox(t.x + lx * (t.w / 2 - 0.15), t.h / 2, t.z + lz * (t.d / 2 - 0.15), 0.2, t.h + 2, 0.2, wood);
+    }
+    addBox(t.x, t.h - 0.17, t.z, t.w, 0.35, t.d, crateMaterial);
+    for (const [x, z, w, d] of [[0, -t.d / 2, t.w, 0.08], [0, t.d / 2, t.w, 0.08], [-t.w / 2, 0, 0.08, t.d]]) {
+      addBox(t.x + x, t.h + 0.55, t.z + z, w, 0.08, d, wood);
+    }
+    const roof = addBox(t.x, t.h + 2.1, t.z, t.w + 0.6, 0.06, t.d + 0.6, tin);
+    roof.rotation.z = 0.12;
+  }
+  // Burnt cars: black and rusty, with empty windows, still smoking
+  const burnt = new THREE.MeshStandardMaterial({ color: "#2a2522", roughness: 0.95, metalness: 0.3 });
+  const rust = new THREE.MeshStandardMaterial({ color: "#5a3420", roughness: 1 });
+  const tyre = new THREE.MeshStandardMaterial({ color: "#111", roughness: 1 });
+  for (const c of cars) {
+    addBox(c.x, 0.65, c.z, c.w, 0.75, c.d, burnt);
+    addBox(c.x, 1.15, c.z + 0.2, c.w - 0.2, 0.3, c.d * 0.5, rust);
+    for (const wx of [-1, 1]) for (const wz of [-1, 1]) {
+      const wheel = new THREE.Mesh(new THREE.CylinderGeometry(0.33, 0.33, 0.25, 14), tyre);
+      wheel.rotation.z = Math.PI / 2;
+      wheel.position.set(c.x + wx * (c.w / 2 - 0.05), 0.33, c.z + wz * (c.d / 2 - 0.7));
+      scene.add(wheel);
+    }
+    smokeSources.push({ x: c.x, y: 1.4, z: c.z });
+  }
+  // Street lamps that have just come on: their bulbs glow
+  const lampPole = new THREE.MeshStandardMaterial({ color: "#2f3236", metalness: 0.7, roughness: 0.5 });
+  const bulb = new THREE.MeshBasicMaterial({ color: new THREE.Color(4, 3.2, 1.8), toneMapped: false });
+  for (const [x, z] of [[-18.6, -6], [-18.6, 6], [18.6, -6], [18.6, 6], [-6, 18.6], [6, 18.6], [-6, -18.6], [6, -18.6]]) {
+    addBox(x, 2.6, z, 0.12, 5.2, 0.12, lampPole);
+    const toCenter = new THREE.Vector3(-x, 0, -z).normalize().multiplyScalar(0.6);
+    addBox(x + toCenter.x / 2, 5.2, z + toCenter.z / 2, Math.abs(toCenter.x) + 0.08, 0.08, Math.abs(toCenter.z) + 0.08, lampPole);
+    const light = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), bulb);
+    light.position.set(x + toCenter.x, 5.1, z + toCenter.z);
+    scene.add(light);
+  }
+}
+const smokeSources = [];
+
+// ---------- Collision helpers ----------
+function onLava(x, z) {
+  return lavaPools.some(p => Math.abs(x - p.x) < p.w / 2 && Math.abs(z - p.z) < p.d / 2);
+}
 
 function inWaterfall(p) {
   return waterfalls.some(w => {
@@ -655,7 +1094,6 @@ function inPool(x, z) {
   return waterPools.some(p => Math.hypot(x - p.x, z - p.z) < p.r);
 }
 
-// ---------- Collision helpers ----------
 function insidePlatform(p, x, z, extra) {
   return Math.abs(x - p.x) < p.w / 2 + extra && Math.abs(z - p.z) < p.d / 2 + extra;
 }
@@ -678,7 +1116,8 @@ function freeSpot(x, z, margin) {
   return !onLava(x, z) && !inPool(x, z) && !platforms.some(p => insidePlatform(p, x, z, margin));
 }
 
-// ---------- Decorations ----------
+// ---------- Castle decorations ----------
+function decorateCastle() {
 // Grass blades: three thin leaves per clump, dark at the root and light at the tip.
 // One InstancedMesh draws thousands of clumps at once, which is fast.
 function grassClumpGeometry() {
@@ -697,8 +1136,17 @@ function grassClumpGeometry() {
   return g;
 }
 const clumpCount = isPhone ? 1500 : 6000;
-const grass = new THREE.InstancedMesh(grassClumpGeometry(),
-  new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 1 }), clumpCount);
+const grassMaterial = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 1 });
+// Wind: bend the tip of every blade a little, in waves that roll across the courtyard
+grassMaterial.onBeforeCompile = shader => {
+  shader.uniforms.windTime = wind;
+  shader.vertexShader = "uniform float windTime;\n" + shader.vertexShader.replace("#include <begin_vertex>", `
+    #include <begin_vertex>
+    float sway = sin(windTime * 1.8 + instanceMatrix[3].x * 0.35 + instanceMatrix[3].z * 0.25) * 0.09 * (position.y / 0.4);
+    transformed.x += sway;
+    transformed.z += sway * 0.6;`);
+};
+const grass = new THREE.InstancedMesh(grassClumpGeometry(), grassMaterial, clumpCount);
 const place = new THREE.Object3D();
 const tint = new THREE.Color();
 const grassRand = seeded(21);
@@ -803,7 +1251,6 @@ function cloudTexture() {
   }
   return toTexture(c, true);
 }
-const clouds = [];
 for (let i = 0; i < 16; i++) {
   const cloud = new THREE.Sprite(new THREE.SpriteMaterial({ map: cloudTexture(), transparent: true, depthWrite: false, fog: false, opacity: 0.85 }));
   const angle = Math.random() * Math.PI * 2, dist = 80 + Math.random() * 200;
@@ -828,7 +1275,6 @@ for (const [x, z, s] of [[-17, -16, 0.9], [16, -16, 0.7], [-17, 15, 0.8], [16, 1
 // Banners in red and blue hanging on the inside of the walls, and torches between them
 const bannerMaterials = ["#a52a20", "#23498a"].map(color => new THREE.MeshStandardMaterial({ color, roughness: 0.95, side: THREE.DoubleSide }));
 const goldMaterial = new THREE.MeshStandardMaterial({ color: "#e3b341", metalness: 1, roughness: 0.3 });
-const flames = [];
 const flameMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(4, 2.6, 1), toneMapped: false });
 const flameOuter = new THREE.MeshBasicMaterial({ color: new THREE.Color(2.5, 0.9, 0.2), transparent: true, opacity: 0.6, toneMapped: false });
 // Each wall: where it is, which way it faces, and how to turn things to hang on it
@@ -873,6 +1319,15 @@ for (const wall of walls) {
     scene.add(torch);
     flames.push(flame, glow);
   }
+}
+}   // end of decorateCastle
+
+// Build the chosen arena
+if (CASTLE) {
+  buildCastle();
+  decorateCastle();
+} else {
+  buildCity();
 }
 
 // ---------- Particles: embers, sparks, spray and blood ----------
@@ -1123,19 +1578,220 @@ function makeViewSword(camera, layer) {
   return holder;
 }
 
+// ---------- Soldiers (modern mode) ----------
+function camoTextures() {
+  const s = 256, rand = seeded(55);
+  const [color, cg] = makeCanvas(s);
+  const [height, hg] = makeCanvas(s);
+  cg.fillStyle = "#6b6a45";
+  cg.fillRect(0, 0, s, s);
+  // Blobs of olive, brown, black and sand: woodland camouflage
+  for (const [c, n] of [["#4a5230", 40], ["#6a5235", 30], ["#2b2d22", 25], ["#9b8f63", 15]]) {
+    cg.fillStyle = c;
+    for (let i = 0; i < n; i++) {
+      cg.beginPath();
+      cg.ellipse(rand() * s, rand() * s, 8 + rand() * 20, 5 + rand() * 12, rand() * Math.PI, 0, Math.PI * 2);
+      cg.fill();
+    }
+  }
+  // Fabric weave for the normal map
+  hg.fillStyle = "#808080";
+  hg.fillRect(0, 0, s, s);
+  for (let i = 0; i < s; i += 3) {
+    hg.fillStyle = "rgba(255, 255, 255, 0.35)";
+    hg.fillRect(i, 0, 1, s);
+    hg.fillStyle = "rgba(0, 0, 0, 0.35)";
+    hg.fillRect(0, i, s, 1);
+  }
+  return { map: toTexture(color, true), normalMap: toTexture(normalFromHeight(height, 1.5), false) };
+}
+const CAMO = CASTLE ? null : camoTextures();
+
+// A modern assault rifle, pointing along -Z with the grip at the origin
+function makeRifle() {
+  const rifle = new THREE.Group();
+  const metal = new THREE.MeshStandardMaterial({ color: "#2b2d30", roughness: 0.4, metalness: 0.85 });
+  const polymer = new THREE.MeshStandardMaterial({ color: "#1c1d1f", roughness: 0.65 });
+  const tan = new THREE.MeshStandardMaterial({ color: "#8a7a5a", roughness: 0.7 });
+  const lens = new THREE.MeshStandardMaterial({ color: "#16242f", roughness: 0.05, metalness: 1 });
+  const part = (geometry, material, x, y, z, rotX = 0) => {
+    const m = new THREE.Mesh(geometry, material);
+    m.position.set(x, y, z);
+    m.rotation.x = rotX;
+    m.castShadow = true;
+    rifle.add(m);
+    return m;
+  };
+  part(new THREE.BoxGeometry(0.055, 0.085, 0.4), metal, 0, 0.04, -0.06);                         // receiver
+  part(new THREE.BoxGeometry(0.03, 0.02, 0.36), metal, 0, 0.095, -0.08);                         // rail on top
+  part(new THREE.BoxGeometry(0.065, 0.07, 0.26), tan, 0, 0.035, -0.37);                          // handguard
+  part(new THREE.CylinderGeometry(0.012, 0.012, 0.3, 10), metal, 0, 0.045, -0.6, Math.PI / 2);  // barrel
+  part(new THREE.CylinderGeometry(0.02, 0.018, 0.07, 10), metal, 0, 0.045, -0.77, Math.PI / 2); // muzzle brake
+  part(new THREE.BoxGeometry(0.035, 0.16, 0.07), polymer, 0, -0.08, -0.13, 0.25);              // magazine
+  part(new THREE.BoxGeometry(0.035, 0.1, 0.045), polymer, 0, -0.05, 0.07, -0.35);              // pistol grip
+  part(new THREE.BoxGeometry(0.05, 0.08, 0.24), tan, 0, 0.02, 0.26);                              // stock
+  part(new THREE.CylinderGeometry(0.024, 0.024, 0.15, 12), metal, 0, 0.13, -0.08, Math.PI / 2);  // scope
+  part(new THREE.CylinderGeometry(0.022, 0.022, 0.005, 12), lens, 0, 0.13, -0.158, Math.PI / 2);
+  // Where bullets and the muzzle flash come out
+  const muzzle = new THREE.Object3D();
+  muzzle.position.set(0, 0.045, -0.82);
+  rifle.add(muzzle);
+  rifle.userData.muzzle = muzzle;
+  return rifle;
+}
+
+// A star-shaped flash, drawn in code
+function flashTexture() {
+  const [c, g] = makeCanvas(64);
+  const glow = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  glow.addColorStop(0, "rgba(255, 250, 220, 1)");
+  glow.addColorStop(0.3, "rgba(255, 190, 80, 0.9)");
+  glow.addColorStop(1, "rgba(255, 120, 0, 0)");
+  g.fillStyle = glow;
+  g.beginPath();
+  for (let i = 0; i < 12; i++) {
+    const a = i / 12 * Math.PI * 2, r = i % 2 ? 12 : 32;
+    g.lineTo(32 + Math.cos(a) * r, 32 + Math.sin(a) * r);
+  }
+  g.fill();
+  return toTexture(c, true);
+}
+const FLASH = CASTLE ? null : flashTexture();
+
+function addMuzzleFlash(rifle, size) {
+  const flash = new THREE.Sprite(new THREE.SpriteMaterial({ map: FLASH, color: new THREE.Color(3, 2.4, 1.4), transparent: true,
+                                                            depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false }));
+  flash.scale.setScalar(size);
+  flash.visible = false;
+  rifle.userData.muzzle.add(flash);
+  return flash;
+}
+
+function makeSoldier(color) {
+  const soldier = new THREE.Group();
+  soldier.rotation.order = "YXZ";   // turn first, then fall over (when dying)
+  const camo = new THREE.MeshStandardMaterial({ map: CAMO.map, normalMap: CAMO.normalMap, roughness: 0.95 });
+  const vest = new THREE.MeshStandardMaterial({ color: "#4b4f31", roughness: 0.9 });
+  const gear = new THREE.MeshStandardMaterial({ color: "#35372a", roughness: 0.85 });
+  const helmetMat = new THREE.MeshStandardMaterial({ map: CAMO.map, color: "#9a9a80", roughness: 0.8 });
+  const team = new THREE.MeshStandardMaterial({ color, roughness: 0.7 });
+  const dark = new THREE.MeshStandardMaterial({ color: "#1f1e1c", roughness: 0.9 });
+  const glass = new THREE.MeshStandardMaterial({ color: "#0b0e12", roughness: 0.03, metalness: 1 });
+  const add = (geometry, material, x, y, z, parent = soldier) => {
+    const m = new THREE.Mesh(geometry, material);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    parent.add(m);
+    return m;
+  };
+  // Legs: camo trousers, knee pads, boots. The knee bends when walking.
+  const makeLeg = x => {
+    const hip = new THREE.Group();
+    hip.position.set(x, 0.92, 0);
+    soldier.add(hip);
+    add(new THREE.CylinderGeometry(0.115, 0.1, 0.46, 12), camo, 0, -0.23, 0, hip);
+    const knee = new THREE.Group();
+    knee.position.y = -0.46;
+    hip.add(knee);
+    add(new THREE.BoxGeometry(0.13, 0.13, 0.05), dark, 0, 0, -0.09, knee);
+    add(new THREE.CylinderGeometry(0.095, 0.085, 0.38, 12), camo, 0, -0.19, 0, knee);
+    add(new THREE.BoxGeometry(0.14, 0.12, 0.29), dark, 0, -0.41, -0.04, knee);
+    return { hip, knee };
+  };
+  const legL = makeLeg(-0.13);
+  const legR = makeLeg(0.13);
+
+  // Upper body turns as one piece (so it can lean when looking up and down)
+  const upper = new THREE.Group();
+  upper.position.y = 0.92;
+  soldier.add(upper);
+  add(new THREE.CylinderGeometry(0.27, 0.24, 0.62, 16), camo, 0, 0.3, 0, upper);
+  add(new THREE.BoxGeometry(0.56, 0.48, 0.36), vest, 0, 0.34, 0, upper);          // plate carrier vest
+  for (const x of [-0.15, 0, 0.15]) add(new THREE.BoxGeometry(0.12, 0.15, 0.07), gear, x, 0.2, -0.2, upper);   // magazine pouches
+  add(new THREE.BoxGeometry(0.2, 0.25, 0.1), gear, 0.05, 0.4, 0.22, upper);       // radio on the back
+  add(new THREE.CylinderGeometry(0.008, 0.008, 0.5), dark, 0.12, 0.7, 0.24, upper);   // its aerial
+  add(new THREE.TorusGeometry(0.255, 0.035, 8, 24), gear, 0, 0.02, 0, upper).rotation.x = Math.PI / 2;   // belt
+  for (const side of [-1, 1]) {
+    add(new THREE.BoxGeometry(0.02, 0.1, 0.12), team, side * 0.29, 0.5, 0, upper);   // team patch on each shoulder
+  }
+
+  // Head: dark balaclava, ballistic glasses, a camo helmet with a team-colored band
+  const head = new THREE.Group();
+  head.position.y = 0.72;
+  upper.add(head);
+  add(new THREE.CylinderGeometry(0.09, 0.1, 0.1, 12), dark, 0, 0, 0, head);      // neck
+  add(new THREE.SphereGeometry(0.135, 16, 12), dark, 0, 0.12, 0, head);
+  add(new THREE.BoxGeometry(0.21, 0.05, 0.04), glass, 0, 0.14, -0.12, head);
+  const helmet = add(new THREE.SphereGeometry(0.175, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), helmetMat, 0, 0.16, 0.01, head);
+  helmet.scale.set(1, 0.95, 1.1);
+  add(new THREE.TorusGeometry(0.17, 0.018, 6, 24), team, 0, 0.18, 0.01, head).rotation.x = Math.PI / 2;
+  add(new THREE.BoxGeometry(0.08, 0.05, 0.03), dark, 0, 0.26, -0.17, head);      // night vision mount
+
+  // Arms reaching from the shoulders to the rifle: the right hand on the grip, the left under the barrel
+  const arm = (x, hand) => {
+    const shoulder = new THREE.Group();
+    shoulder.position.set(x, 0.58, 0);
+    const reach = hand.clone().sub(shoulder.position);
+    const length = reach.length();
+    shoulder.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), reach.normalize());
+    upper.add(shoulder);
+    add(new THREE.CylinderGeometry(0.075, 0.062, length, 10), camo, 0, -length / 2, 0, shoulder);
+    add(new THREE.SphereGeometry(0.06, 10, 8), dark, 0, -length, 0, shoulder);   // glove
+    return shoulder;
+  };
+  arm(0.27, new THREE.Vector3(0.14, 0.38, -0.16));
+  arm(-0.27, new THREE.Vector3(0.1, 0.44, -0.58));
+  const rifle = makeRifle();
+  rifle.position.set(0.12, 0.42, -0.22);
+  upper.add(rifle);
+  const flash = addMuzzleFlash(rifle, 0.5);
+
+  soldier.userData = { legL, legR, upper, head, rifle, flash };
+  scene.add(soldier);
+  return soldier;
+}
+
+// The rifle and gloves you see in your own view, with a muzzle flash and its light
+function makeViewRifle(camera, layer) {
+  const holder = new THREE.Group();
+  const rifle = makeRifle();
+  holder.add(rifle);
+  const glove = new THREE.MeshStandardMaterial({ color: "#2a2826", roughness: 0.9 });
+  const camo = new THREE.MeshStandardMaterial({ map: CAMO.map, roughness: 0.95 });
+  const hand = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.07, 0.09), glove);
+  hand.position.set(0, -0.06, 0.06);
+  const hand2 = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.06, 0.1), glove);
+  hand2.position.set(0, -0.01, -0.38);
+  const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.05, 0.3, 10), camo);
+  sleeve.rotation.x = Math.PI / 2.4;
+  sleeve.position.set(0.02, -0.14, 0.22);
+  holder.add(hand, hand2, sleeve);
+  const flash = addMuzzleFlash(rifle, 0.35);
+  const flashLight = new THREE.PointLight("#ffb060", 0, 6, 1.5);
+  rifle.userData.muzzle.add(flashLight);
+  holder.scale.setScalar(0.6);
+  holder.position.set(0.12, -0.13, -0.3);
+  holder.userData = { flash, flashLight };
+  holder.traverse(o => o.layers.set(layer));
+  camera.add(holder);
+  return holder;
+}
+
 const players = [];
 for (let i = 0; i < 2; i++) {
   const camera = new THREE.PerspectiveCamera(70, 1, 0.04, 1200);
-  // Layers: knight 1 is on layer 1 and knight 2 on layer 2. Each camera skips its own knight,
-  // so you don't see the inside of your own helmet. Layers 3 and 4 are the swords in your hand.
+  // Layers: fighter 1 is on layer 1 and fighter 2 on layer 2. Each camera skips its own fighter,
+  // so you don't see the inside of your own helmet. Layers 3 and 4 are the weapons in your hands.
   camera.layers.enable(i === 0 ? 2 : 1);
   camera.layers.enable(3 + i);
   scene.add(camera);
-  const model = makeKnight(i === 0 ? "#b3261e" : "#24539c");
+  const color = i === 0 ? "#b3261e" : "#24539c";
+  const model = CASTLE ? makeKnight(color) : makeSoldier(color);
   model.traverse(o => o.layers.set(1 + i));
   players.push({
     camera, model,
-    viewSword: makeViewSword(camera, 3 + i),
+    viewSword: CASTLE ? makeViewSword(camera, 3 + i) : makeViewRifle(camera, 3 + i),
     controls: CONTROLS[i],
     hud: document.getElementById("hud" + (i + 1)),
     name: "Player " + (i + 1)
@@ -1149,6 +1805,14 @@ try {
 } catch (e) {}
 players.forEach(p => { p.hud.querySelector(".name").textContent = p.name; });
 document.getElementById("mouseHint").style.display = isPhone ? "none" : "flex";
+document.getElementById("help").innerHTML = CASTLE
+  ? "Player 1: W A S D move, mouse look, left click sword, right click or E fireball, Space jump &nbsp;|&nbsp; " +
+    "Player 2: ↑ ↓ walk, ← → turn, - jump, Enter sword, Right Shift fireball &nbsp;|&nbsp; " +
+    "Hold jump in a waterfall to swim up &nbsp;|&nbsp; R restart, Esc menu"
+  : "Player 1: W A S D move, mouse aim, left click shoot (hold), right click or E grenade, Space jump &nbsp;|&nbsp; " +
+    "Player 2: ↑ ↓ walk, ← → turn, - jump, Enter shoot (hold), Right Shift grenade &nbsp;|&nbsp; " +
+    "Aim for the head! &nbsp;|&nbsp; R restart, Esc menu";
+if (CASTLE) document.querySelectorAll(".ammo, .headshot").forEach(e => e.remove());
 
 // ---------- Hearts, fireballs and explosions ----------
 let hearts = [];
@@ -1167,13 +1831,35 @@ heartGeometry.center();
 const heartMaterial = new THREE.MeshPhysicalMaterial({ color: "#ff1f5a", emissive: "#8a0024", emissiveIntensity: 0.6,
                                                        roughness: 0.15, clearcoat: 1 });
 
+// In the modern mode the hearts are medkits: a green box with a white cross
+function makeMedkit() {
+  const kit = new THREE.Group();
+  const box = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 0.36), new THREE.MeshStandardMaterial({ color: "#3d5a2a", roughness: 0.6 }));
+  box.castShadow = true;
+  kit.add(box);
+  const white = new THREE.MeshStandardMaterial({ color: "#f2f2f2", roughness: 0.5, emissive: "#333" });
+  for (const [w, h, d] of [[0.3, 0.02, 0.09], [0.09, 0.02, 0.3]]) {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), white);
+    bar.position.y = 0.155;
+    kit.add(bar);
+  }
+  for (const side of [-1, 1]) {
+    for (const [w, h] of [[0.2, 0.06], [0.06, 0.2]]) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.02), white);
+      bar.position.z = side * 0.185;
+      kit.add(bar);
+    }
+  }
+  return kit;
+}
+
 function spawnHeart() {
   let x, z;
   do {
     x = (Math.random() * 2 - 1) * (ARENA - 2);
     z = (Math.random() * 2 - 1) * (ARENA - 2);
   } while (!freeSpot(x, z, 0.6));
-  const mesh = new THREE.Mesh(heartGeometry, heartMaterial);
+  const mesh = CASTLE ? new THREE.Mesh(heartGeometry, heartMaterial) : makeMedkit();
   mesh.position.set(x, 0.9, z);
   mesh.castShadow = true;
   scene.add(mesh);
@@ -1214,6 +1900,151 @@ function explode(position, big = true) {
   }
 }
 
+// ---------- Modern weapons: rifle bullets, grenades and smoke ----------
+let grenades = [];
+let tracers = [];
+let smoke = [];
+const ray = new THREE.Ray();
+const box3 = new THREE.Box3();
+const headSphere = new THREE.Sphere();
+const hitVector = new THREE.Vector3();
+const tracerGeometry = new THREE.BoxGeometry(1, 1, 1);
+const tracerMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(6, 4.5, 2), toneMapped: false, transparent: true });
+
+// Players with the mouse aim exactly. Everyone else (arrow keys, touch) gets help aiming up or down
+// at the other soldier when they are roughly in front.
+function aimPitch(p, other) {
+  if (p === players[0] && mouseLocked()) return p.pitch;
+  const dx = other.x - p.x, dz = other.z - p.z, dist = Math.hypot(dx, dz);
+  const dir = forwardOf(p);
+  if (!other.dead && (dx * dir.x + dz * dir.z) / (dist || 1) > 0.97) return Math.atan2(other.y + 1.15 - (p.y + 1.6), dist);
+  return p.pitch;
+}
+
+// How far a ray goes before it hits a wall, a crate, the ground or the edge of the arena
+function rayDistance(origin, direction, maxDist) {
+  let nearest = maxDist;
+  ray.set(origin, direction);
+  for (const b of platforms) {
+    box3.min.set(b.x - b.w / 2, b.bottom || 0, b.z - b.d / 2);
+    box3.max.set(b.x + b.w / 2, b.h, b.z + b.d / 2);
+    if (ray.intersectBox(box3, hitVector)) nearest = Math.min(nearest, hitVector.distanceTo(origin));
+  }
+  if (direction.y < 0) nearest = Math.min(nearest, -origin.y / direction.y);
+  for (const [o, d] of [[origin.x, direction.x], [origin.z, direction.z]]) {
+    if (d > 0) nearest = Math.min(nearest, (ARENA - o) / d);
+    if (d < 0) nearest = Math.min(nearest, (-ARENA - o) / d);
+  }
+  return nearest;
+}
+
+function addTracer(from, to) {
+  const length = from.distanceTo(to);
+  const mesh = new THREE.Mesh(tracerGeometry, tracerMaterial);
+  mesh.position.copy(from).lerp(to, 0.5);
+  mesh.scale.set(0.012, 0.012, length);
+  mesh.lookAt(to);
+  scene.add(mesh);
+  tracers.push({ mesh, life: 0.05 });
+}
+
+function shoot(p, other) {
+  p.ammo--;
+  p.fireTimer = RIFLE_FIRE_TIME;
+  p.recoil = 1;
+  p.flash = 0.05;
+  const moving = keys[p.controls.forward] || keys[p.controls.back];
+  const spread = moving ? 0.03 : 0.01;
+  const pitch = aimPitch(p, other) + (Math.random() - 0.5) * spread;
+  const yaw = p.yaw + (Math.random() - 0.5) * spread;
+  const origin = new THREE.Vector3(p.x, p.y + 1.6, p.z);
+  const direction = new THREE.Vector3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
+  let distance = rayDistance(origin, direction, 80);
+  let hit = null;
+  if (!other.dead) {
+    ray.set(origin, direction);
+    // Head first: a small ball on top. Then the body: a box from the knees to the shoulders.
+    headSphere.center.set(other.x, other.y + 1.68, other.z);
+    headSphere.radius = 0.19;
+    if (ray.intersectSphere(headSphere, hitVector) && hitVector.distanceTo(origin) < distance) {
+      distance = hitVector.distanceTo(origin);
+      hit = "head";
+    }
+    box3.min.set(other.x - 0.3, other.y + 0.05, other.z - 0.3);
+    box3.max.set(other.x + 0.3, other.y + 1.48, other.z + 0.3);
+    if (ray.intersectBox(box3, hitVector) && hitVector.distanceTo(origin) < distance) {
+      distance = hitVector.distanceTo(origin);
+      hit = "body";
+    }
+  }
+  const end = origin.clone().addScaledVector(direction, distance);
+  // The bullet's glowing trail starts at the gun, a bit to the right and below your eyes
+  const right = new THREE.Vector3(Math.cos(p.yaw), 0, -Math.sin(p.yaw));
+  const start = origin.clone().addScaledVector(direction, 0.7).addScaledVector(right, 0.13).add(new THREE.Vector3(0, -0.12, 0));
+  addTracer(start, end);
+  if (hit) {
+    hurt(other, hit === "head" ? RIFLE_HEAD_DAMAGE : RIFLE_BODY_DAMAGE, p.x, p.z, hit === "head" ? 4 : 2.5, hit === "head" ? 14 : 7, end.y);
+    if (hit === "head") p.headshot = 0.8;
+  } else {
+    // Dust and sparks where the bullet hits
+    for (let i = 0; i < 6; i++) {
+      addParticle(end.x, end.y, end.z, (Math.random() - 0.5) * 2, Math.random() * 2, (Math.random() - 0.5) * 2,
+                  0.03 + Math.random() * 0.03, i < 2 ? "#ffe9a8" : "#8d8273", 0.4, 6);
+    }
+  }
+}
+
+function throwGrenade(p) {
+  const dir = forwardOf(p);
+  const pitch = p === players[0] && mouseLocked() ? p.pitch : 0.15;
+  const mesh = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 10), new THREE.MeshStandardMaterial({ color: "#3e4a2a", roughness: 0.6 }));
+  const top = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.05, 8), new THREE.MeshStandardMaterial({ color: "#777", metalness: 0.8, roughness: 0.4 }));
+  top.position.y = 0.08;
+  body.castShadow = true;
+  mesh.add(body, top);
+  scene.add(mesh);
+  grenades.push({
+    mesh, owner: p, fuse: GRENADE_FUSE,
+    x: p.x + dir.x * 0.5, y: p.y + 1.5, z: p.z + dir.z * 0.5,
+    vx: dir.x * 11, vy: 4 + pitch * 9, vz: dir.z * 11
+  });
+}
+
+function explodeGrenade(g) {
+  const at = new THREE.Vector3(g.x, g.y, g.z);
+  explode(at, true);
+  explode(at.clone().add(new THREE.Vector3(0, 0.6, 0)), true);
+  for (let i = 0; i < 6; i++) addSmoke(g.x + (Math.random() - 0.5), g.y + 0.3, g.z + (Math.random() - 0.5), 2.5, "#4a4743");
+  for (const p of players) {
+    const d = Math.hypot(p.x - g.x, p.y + 1 - g.y, p.z - g.z);
+    if (d < GRENADE_RADIUS) {
+      const power = 1 - d / GRENADE_RADIUS;
+      hurt(p, Math.round(GRENADE_DAMAGE * power), g.x, g.z, 6 + power * 12, Math.round(10 + power * 20));
+    }
+    if (d < 14) p.shake = Math.max(p.shake, 0.45 * (1 - d / 14));
+  }
+}
+
+const smokeTexture = (() => {
+  const [c, g] = makeCanvas(64);
+  const puff = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  puff.addColorStop(0, "rgba(255, 255, 255, 0.7)");
+  puff.addColorStop(1, "rgba(255, 255, 255, 0)");
+  g.fillStyle = puff;
+  g.fillRect(0, 0, 64, 64);
+  return toTexture(c, true);
+})();
+
+function addSmoke(x, y, z, size, color) {
+  if (smoke.length > 80) return;
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: smokeTexture, color, transparent: true, depthWrite: false, opacity: 0.6 }));
+  sprite.position.set(x, y, z);
+  sprite.scale.setScalar(size);
+  scene.add(sprite);
+  smoke.push({ sprite, life: 3 + Math.random() * 2, maxLife: 5, rise: 0.6 + Math.random() * 0.5, grow: size * 0.4 });
+}
+
 // ---------- Players ----------
 function restart() {
   players.forEach((p, i) => {
@@ -1223,14 +2054,19 @@ function restart() {
       pitch: 0,                     // looking up or down (only with the mouse)
       kx: 0, kz: 0,                 // knockback speed
       health: MAX_HEALTH, onGround: true, dead: false, deadTime: 0,
-      swing: 0, swingCooldown: 0, fireCooldown: 0, walk: 0, hurt: 0, shake: 0
+      swing: 0, swingCooldown: 0, fireCooldown: 0, walk: 0, hurt: 0, shake: 0,
+      ammo: RIFLE_AMMO, reload: 0, fireTimer: 0, recoil: 0, flash: 0, headshot: 0
     });
     p.model.rotation.set(0, 0, 0);
   });
-  for (const list of [hearts, fireballs, explosions]) list.forEach(o => scene.remove(o.mesh || o));
+  for (const list of [hearts, fireballs, explosions, grenades, tracers]) list.forEach(o => scene.remove(o.mesh || o));
+  smoke.forEach(s => scene.remove(s.sprite));
   hearts = [];
   fireballs = [];
   explosions = [];
+  grenades = [];
+  tracers = [];
+  smoke = [];
   particles = [];
   drops = [];
   splats = [];
@@ -1252,7 +2088,7 @@ function tryMove(p, dx, dz) {
 }
 
 // Getting hit: lose health, bleed, get knocked back (and a little up), and the screen shakes
-function hurt(p, damage, fromX, fromZ, knockback, bloodAmount) {
+function hurt(p, damage, fromX, fromZ, knockback, bloodAmount, bloodY = p.y + 1.3) {
   if (p.dead) return;
   p.health -= damage;
   p.hurt = 0.35;
@@ -1264,7 +2100,7 @@ function hurt(p, damage, fromX, fromZ, knockback, bloodAmount) {
   p.kx = dx * knockback;
   p.kz = dz * knockback;
   if (p.onGround) { p.vy = 4; p.onGround = false; }
-  bleed(p.x, p.y + 1.3, p.z, dx, dz, bloodAmount);
+  bleed(p.x, bloodY, p.z, dx, dz, bloodAmount);
 }
 
 function die(p) {
@@ -1334,6 +2170,29 @@ function updatePlayer(p, other, dt) {
     explode(new THREE.Vector3(p.x, 0.3, p.z), false);
   }
 
+  p.fireCooldown = Math.max(0, p.fireCooldown - dt);
+  if (!CASTLE) {
+    // Rifle: hold the trigger to keep firing. When the magazine is empty it reloads by itself.
+    p.fireTimer -= dt;
+    p.recoil = Math.max(0, p.recoil - dt * 10);
+    p.flash = Math.max(0, p.flash - dt);
+    p.headshot = Math.max(0, p.headshot - dt);
+    if (p.reload > 0) {
+      p.reload -= dt;
+      if (p.reload <= 0) p.ammo = RIFLE_AMMO;
+    } else if (p.ammo === 0) {
+      p.reload = RELOAD_TIME;
+    } else if (keys[c.attack] && p.fireTimer <= 0) {
+      shoot(p, other);
+    }
+    // Grenade, with a cooldown so you can't spam it
+    if ((keys[c.fire] || keys[c.fire2]) && p.fireCooldown === 0) {
+      throwGrenade(p);
+      p.fireCooldown = GRENADE_COOLDOWN;
+    }
+    return;
+  }
+
   // Sword: hits the other knight if they are close and in front of you
   p.swingCooldown -= dt;
   if (keys[c.attack] && p.swingCooldown <= 0) {
@@ -1354,7 +2213,6 @@ function updatePlayer(p, other, dt) {
   p.swing = Math.max(0, p.swing - dt);
 
   // Fireball, with a cooldown so you can't spam it
-  p.fireCooldown = Math.max(0, p.fireCooldown - dt);
   if ((keys[c.fire] || keys[c.fire2]) && p.fireCooldown === 0) {
     shootFireball(p);
     p.fireCooldown = FIREBALL_COOLDOWN;
@@ -1424,17 +2282,52 @@ function updateWorld(dt, time) {
     h.position.y = 0.9 + Math.sin(time * 3 + h.position.x) * 0.15;
     for (const p of players) {
       if (!h.taken && !p.dead && Math.hypot(p.x - h.position.x, p.z - h.position.z) < 1 && p.y < 1.5) {
-        p.health = Math.min(MAX_HEALTH, p.health + HEART_HEAL);
+        p.health = Math.min(MAX_HEALTH, p.health + (CASTLE ? HEART_HEAL : MEDKIT_HEAL));
         h.taken = true;
         scene.remove(h);
         for (let i = 0; i < 12; i++) {
           addParticle(h.position.x, h.position.y, h.position.z, (Math.random() - 0.5) * 3, Math.random() * 3,
-                      (Math.random() - 0.5) * 3, 0.04, "#ff7aa0", 0.6, 4);
+                      (Math.random() - 0.5) * 3, 0.04, CASTLE ? "#ff7aa0" : "#9dff9d", 0.6, 4);
         }
       }
     }
   }
   hearts = hearts.filter(h => !h.taken);
+
+  // Grenades fly in an arc, bounce off the ground and walls, and go off when the fuse runs out
+  for (const g of grenades) {
+    const prevY = g.y;
+    g.vy -= 20 * dt;
+    const nx = g.x + g.vx * dt, nz = g.z + g.vz * dt;
+    const hitsSide = Math.abs(nx) > ARENA - 0.3 || Math.abs(nz) > ARENA - 0.3 ||
+                     platforms.some(p => insidePlatform(p, nx, nz, 0.05) && g.y < p.h && g.y > (p.bottom || 0));
+    if (hitsSide) { g.vx *= -0.4; g.vz *= -0.4; } else { g.x = nx; g.z = nz; }
+    g.y += g.vy * dt;
+    const floor = floorAt(g.x, g.z, prevY) + 0.075;
+    if (g.y <= floor) { g.y = floor; g.vy = Math.abs(g.vy) * 0.35; g.vx *= 0.6; g.vz *= 0.6; }
+    g.mesh.position.set(g.x, g.y, g.z);
+    g.mesh.rotation.x += dt * 8;
+    g.fuse -= dt;
+    if (g.fuse <= 0) { explodeGrenade(g); scene.remove(g.mesh); g.done = true; }
+  }
+  grenades = grenades.filter(g => !g.done);
+  for (const t of tracers) {
+    t.life -= dt;
+    if (t.life <= 0) { scene.remove(t.mesh); t.done = true; }
+  }
+  tracers = tracers.filter(t => !t.done);
+  // Smoke rises, spreads out and fades
+  if (Math.random() < dt * 4) {
+    for (const s of smokeSources) addSmoke(s.x + (Math.random() - 0.5) * 0.6, s.y, s.z + (Math.random() - 0.5) * 0.6, 1.2, "#3b3936");
+  }
+  for (const s of smoke) {
+    s.life -= dt;
+    s.sprite.position.y += s.rise * dt;
+    s.sprite.scale.addScalar(s.grow * dt);
+    s.sprite.material.opacity = Math.max(0, 0.55 * Math.min(1, s.life / 2));
+    if (s.life <= 0) { scene.remove(s.sprite); s.sprite.material.dispose(); s.done = true; }
+  }
+  smoke = smoke.filter(s => !s.done);
 
   // Lava spits sparks, waterfalls spray at the bottom, torches flicker
   for (const pool of lavaPools) {
@@ -1505,12 +2398,37 @@ function updateWorld(dt, time) {
   splatMesh.count = splats.length;
   splatMesh.instanceMatrix.needsUpdate = true;
 
-  // Moving water and slowly flowing, flickering lava
-  waterTexture.offset.y += dt * 1.6;
-  lavaTexture.offset.x += dt * 0.025;
-  lavaTexture.offset.y += dt * 0.015;
-  lavaMaterial.emissiveIntensity = 3 + Math.sin(time * 3) * 0.5;
-  lavaLights.forEach((l, i) => { l.intensity = 35 + Math.sin(time * 5 + i) * 8; });
+  // Moving water, slowly flowing and flickering lava, grass in the wind
+  wind.value = time;
+  if (CASTLE) {
+    waterTexture.offset.y += dt * 1.6;
+    lavaTexture.offset.x += dt * 0.025;
+    lavaTexture.offset.y += dt * 0.015;
+    lavaMaterial.emissiveIntensity = 3 + Math.sin(time * 3) * 0.5;
+    lavaLights.forEach((l, i) => { l.intensity = 35 + Math.sin(time * 5 + i) * 8; });
+  }
+}
+
+// Soldier animation: legs walk, the upper body leans with where you look, the rifle kicks back
+function animateSoldier(p, time) {
+  const { upper, rifle, flash } = p.model.userData;
+  upper.rotation.x = p.pitch * 0.5;
+  upper.position.y = 0.92 + Math.abs(Math.sin(p.walk)) * 0.02 + Math.sin(time * 1.5) * 0.005;   // breathing
+  rifle.position.z = -0.22 + p.recoil * 0.05;
+  rifle.rotation.x = p.reload > 0 ? -0.6 : 0;   // tipped down while reloading
+  flash.visible = p.flash > 0;
+  flash.material.rotation = Math.random() * Math.PI;
+  // First-person rifle: kicks back when firing, dips while reloading, sways when walking
+  const view = p.viewSword;
+  const reloadDip = p.reload > 0 ? Math.sin(Math.min(1, (RELOAD_TIME - p.reload) / RELOAD_TIME) * Math.PI) : 0;
+  view.position.set(0.12, -0.13 - reloadDip * 0.1 + Math.sin(p.walk * 2) * 0.003, -0.3 + p.recoil * 0.03);
+  view.rotation.set(p.recoil * 0.06 - reloadDip * 0.5, 0, reloadDip * 0.4);
+  view.userData.flash.visible = p.flash > 0;
+  view.userData.flash.material.rotation = Math.random() * Math.PI;
+  view.userData.flashLight.intensity = p.flash > 0 ? 8 : 0;
+  // Ammo counter and headshot message
+  p.hud.querySelector(".ammo").textContent = p.reload > 0 ? "Reloading..." : p.ammo + " / " + RIFLE_AMMO;
+  p.hud.querySelector(".headshot").style.opacity = p.headshot > 0 ? 1 : 0;
 }
 
 // Put each knight's model and camera where the player is, and animate them
@@ -1518,6 +2436,9 @@ function placePlayer(p, time) {
   const m = p.model;
   m.position.set(p.x, p.y, p.z);
   const { legL, legR, swordArm, cape, head } = m.userData;
+  p.hud.querySelector(".fire div").style.width = (1 - p.fireCooldown / (CASTLE ? FIREBALL_COOLDOWN : GRENADE_COOLDOWN)) * 100 + "%";
+  p.hud.querySelector(".health div").style.width = Math.max(0, p.health) + "%";
+  p.hud.querySelector(".hit").style.opacity = p.hurt > 0 || p.dead ? 1 : 0;
   if (p.dead) {
     // Fall over backwards
     const fall = Math.min(1, p.deadTime / 0.6);
@@ -1531,6 +2452,8 @@ function placePlayer(p, time) {
   legR.hip.rotation.x = -step * 0.6;
   legL.knee.rotation.x = -Math.max(0, -step) * 0.9;
   legR.knee.rotation.x = -Math.max(0, step) * 0.9;
+  placeCamera(p);
+  if (!CASTLE) { animateSoldier(p, time); return; }
   head.position.y = 1.66 + Math.abs(step) * 0.015;
   // Sword arm: resting forward, or a chop from high above down to the front
   if (p.swing > 0) {
@@ -1549,8 +2472,14 @@ function placePlayer(p, time) {
     positions.array[i * 3 + 2] = rest[i * 3 + 2] + down * down * (0.12 + moving * 0.12) * (1 + Math.sin(time * 5 + down * 4) * 0.2);
   }
   positions.needsUpdate = true;
+  // The sword in your own view swings down when you attack, and sways a little when walking
+  const chop = p.swing > 0 ? Math.sin((1 - p.swing / 0.3) * Math.PI) : 0;
+  p.viewSword.rotation.x = -0.85 - chop * 1.2;
+  p.viewSword.position.y = -0.2 + Math.sin(p.walk * 2) * 0.004;
+}
 
-  // Camera at eye height. When hit it shakes, and when dead it drops to the ground and tips over.
+// Camera at eye height. When hit it shakes, and when dead it drops to the ground and tips over.
+function placeCamera(p) {
   const shake = p.shake * 0.25;
   if (p.dead) {
     const fall = Math.min(1, p.deadTime / 0.6);
@@ -1561,14 +2490,6 @@ function placePlayer(p, time) {
     p.camera.rotation.set(p.pitch, p.yaw, 0, "YXZ");   // turn first, then look up or down
   }
   p.viewSword.visible = !p.dead;
-  // The sword in your own view swings down when you attack, and sways a little when walking
-  const chop = p.swing > 0 ? Math.sin((1 - p.swing / 0.3) * Math.PI) : 0;
-  p.viewSword.rotation.x = -0.85 - chop * 1.2;
-  p.viewSword.position.y = -0.2 + Math.sin(p.walk * 2) * 0.004;
-  // HUD
-  p.hud.querySelector(".health div").style.width = Math.max(0, p.health) + "%";
-  p.hud.querySelector(".fire div").style.width = (1 - p.fireCooldown / FIREBALL_COOLDOWN) * 100 + "%";
-  p.hud.querySelector(".hit").style.opacity = p.hurt > 0 || p.dead ? 1 : 0;
 }
 
 // ---------- Drawing: two halves of the screen, one camera each ----------
@@ -1601,9 +2522,11 @@ restart();
 document.getElementById("loading").style.display = "none";
 
 const clock = new THREE.Clock();
-function loop() {
-  const dt = Math.min(clock.getDelta(), 0.05);
-  const time = clock.elapsedTime;
+// One step of the game: move everyone, fight, and update the world
+let gameTime = 0;
+function step(dt) {
+  gameTime += dt;
+  const time = gameTime;
   if (!winner) {
     updatePlayer(players[0], players[1], dt);
     updatePlayer(players[1], players[0], dt);
@@ -1622,7 +2545,11 @@ function loop() {
   }
   updateWorld(dt, time);
   players.forEach(p => placePlayer(p, time));
+}
 
+function loop() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  step(dt);
   const half = innerWidth / 2;
   renderer.setScissorTest(true);
   players.forEach((p, i) => {
@@ -1637,7 +2564,9 @@ loop();
 
 // Handy for testing in the browser console
 window.game = {
-  players, restart, keys, platforms,
+  players, restart, keys, platforms, mode: MODE, get grenades() { return grenades; },
+  // Run the game for a number of seconds without drawing (for testing)
+  run(seconds) { for (let t = 0; t < seconds; t += 1 / 60) step(1 / 60); },
   get hearts() { return hearts; }, get fireballs() { return fireballs; }, get winner() { return winner; },
   get blood() { return { drops: drops.length, splats: splats.length }; }
 };

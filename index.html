@@ -99,7 +99,7 @@
       <button id="logIn">2 - Log in</button>
       <p id="loginNote" class="note"></p>
       <!-- Change the number with every upload, so you can see if a phone has the newest version -->
-      <p class="version">Version 14</p>
+      <p class="version">Version 15</p>
     </div>
     <!-- Log in: just a username -->
     <div id="loginForm" class="menu" style="display: none">
@@ -117,7 +117,7 @@
       <button id="toLoginMenu">3 - Go to the login menu</button>
       <button id="friends">4 - Friends</button>
       <p id="menuNote" class="note"></p>
-      <p class="version">Version 14</p>
+      <p class="version">Version 15</p>
     </div>
     <!-- Play on one computer: pick the normal 2D game or the first person 3D game -->
     <div id="modeMenu" class="menu" style="display: none">
@@ -125,6 +125,13 @@
       <button id="play2D">1 - 2D</button>
       <button id="play3D">2 - 3D (first person)</button>
       <button id="modeBack">Back</button>
+    </div>
+    <!-- 3D: the medieval castle or the modern war -->
+    <div id="threeDMenu" class="menu" style="display: none">
+      <h1>3D: choose a time</h1>
+      <button id="play3DCastle">1 - Medieval (knights and a castle)</button>
+      <button id="play3DModern">2 - Modern (soldiers and a fort)</button>
+      <button id="threeDBack">Back</button>
     </div>
     <!-- Online: one player creates a game and gets a code, the other joins with it -->
     <div id="onlineMenu" class="menu" style="display: none">
@@ -959,9 +966,26 @@ function play2D() {
   startOneComputer();
 }
 
+// 3D first asks which time you want to fight in
+const threeDMenu = document.getElementById("threeDMenu");
+
 function play3D() {
-  location.href = "3d.html";  // the 3D game is its own page
+  modeMenu.style.display = "none";
+  threeDMenu.style.display = "flex";
 }
+
+function closeThreeDMenu() {
+  threeDMenu.style.display = "none";
+  modeMenu.style.display = "flex";
+}
+
+function start3D(time) {
+  location.href = "3d.html?mode=" + time;  // the 3D game is its own page
+}
+
+document.getElementById("play3DCastle").addEventListener("click", () => start3D("castle"));
+document.getElementById("play3DModern").addEventListener("click", () => start3D("modern"));
+document.getElementById("threeDBack").addEventListener("click", closeThreeDMenu);
 
 document.getElementById("oneComputer").addEventListener("click", openModeMenu);
 document.getElementById("play2D").addEventListener("click", play2D);
@@ -999,6 +1023,13 @@ document.addEventListener("keydown", function (e) {
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   keys[key] = true;
   keys[e.code] = true;   // e.code tells left and right Shift apart
+  if (threeDMenu.style.display !== "none") {
+    // Choosing medieval or modern 3D: 1, 2 or Esc
+    if (key === "1") start3D("castle");
+    if (key === "2") start3D("modern");
+    if (key === "Escape") closeThreeDMenu();
+    return;
+  }
   if (modeMenu.style.display !== "none") {
     // Choosing 2D or 3D: 1, 2 or Esc
     if (key === "1") play2D();
