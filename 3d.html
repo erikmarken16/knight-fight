@@ -53,12 +53,21 @@
     /* Touch buttons for phones: each player's buttons are on their own half of the screen */
     html { touch-action: manipulation; }
     #touch { display: none; }
-    .pad { position: fixed; bottom: 10px; display: flex; gap: 8px; align-items: flex-end; }
-    .pad.p1 { left: 10px; }
-    .pad.p2 { right: 10px; flex-direction: row-reverse; }
-    .dpad { display: grid; grid-template-columns: repeat(3, 50px); grid-template-rows: repeat(2, 50px); gap: 4px; }
-    .acts { display: grid; grid-template-columns: repeat(2, 50px); gap: 4px; }
-    .acts.three { grid-template-columns: repeat(3, 50px); }
+    /* Each player's half of the screen: drag anywhere to look around, joystick near the outer edge */
+    .touchHalf { position: fixed; top: 0; bottom: 0; width: 50%; touch-action: none; }
+    .touchHalf.p1 { left: 0; }
+    .touchHalf.p2 { right: 0; }
+    .stickBase { position: absolute; width: 120px; height: 120px; margin: -60px 0 0 -60px; border-radius: 50%;
+                 background: rgba(0, 0, 0, 0.25); border: 2px solid rgba(255, 255, 255, 0.45); opacity: 0.45; pointer-events: none; }
+    .stickBase.active { opacity: 1; }
+    .stickKnob { position: absolute; left: 35px; top: 35px; width: 50px; height: 50px; border-radius: 50%;
+                 background: rgba(255, 255, 255, 0.55); }
+    /* Big jump and attack buttons in the corner towards the middle, smaller ones in an arc around them */
+    .btns { position: absolute; bottom: 10px; width: 210px; height: 170px; pointer-events: none; }
+    .p1 .btns { right: 10px; }
+    .p2 .btns { left: 10px; }
+    .btns .tb { position: absolute; pointer-events: auto; }
+    .btns .big { width: 70px; height: 70px; font-size: 30px; }
     .tb { width: 50px; height: 50px; padding: 0; border-radius: 50%; font-size: 20px; color: #fff;
           background: rgba(0, 0, 0, 0.35); border: 2px solid rgba(255, 255, 255, 0.7);
           touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
@@ -245,26 +254,99 @@ function holdKey(label, code) {
   return touchButton(label, () => { keys[code] = true; }, () => { keys[code] = false; });
 }
 
-// One player's buttons: walk and turn on the outside, jump/sword/fireball towards the middle
-function makePad(c, which) {
-  const pad = document.createElement("div");
-  pad.className = "pad " + which;
-  const dpad = document.createElement("div");
-  dpad.className = "dpad";
-  dpad.append(document.createElement("span"), holdKey("▲", c.forward), document.createElement("span"),
-              holdKey("◀", c.left), holdKey("▼", c.back), holdKey("▶", c.right));
-  const acts = document.createElement("div");
-  acts.className = "acts";
-  if (CASTLE) {
-    acts.append(holdKey("🔥", c.fire), document.createElement("span"), holdKey("⤒", c.jump), holdKey("⚔", c.attack));
-  } else {
-    // Modern: scope, grenade and crouch on top; jump and shoot below
-    acts.classList.add("three");
-    acts.append(holdKey("🔭", c.aim), holdKey("💣", c.fire), holdKey("⬇", c.crouch),
-                document.createElement("span"), holdKey("⤒", c.jump), holdKey("🎯", c.attack));
+// Phone controls like Roblox Rivals, one set on each player's half of the screen:
+// - put your thumb down near the outer edge and a joystick appears there: push it to walk
+// - drag anywhere else on your half to look around and aim
+// - a big jump button and a big attack button in the corner, smaller buttons around them
+const TOUCH_LOOK_SPEED = 0.006;
+const STICK_RADIUS = 50;
+
+function makeTouchHalf(index) {
+  const c = CONTROLS[index];
+  const outer = index === 0 ? "left" : "right";
+  const half = document.createElement("div");
+  half.className = "touchHalf p" + (index + 1);
+  const base = document.createElement("div");
+  base.className = "stickBase";
+  const knob = document.createElement("div");
+  knob.className = "stickKnob";
+  base.append(knob);
+  half.append(base);
+  // Where the joystick rests when nobody is touching it (faded), like in Roblox
+  const restBase = () => {
+    base.classList.remove("active");
+    base.style.left = (index === 0 ? 95 : half.clientWidth - 95) + "px";
+    base.style.top = (half.clientHeight - 95) + "px";
+    knob.style.transform = "";
+  };
+
+  // The buttons, placed in an arc. Positions are measured from the inner bottom corner of the half.
+  const btns = document.createElement("div");
+  btns.className = "btns";
+  const inner = index === 0 ? "right" : "left";
+  const place = (button, along, up, big) => {
+    if (big) button.classList.add("big");
+    button.style[inner] = along + "px";
+    button.style.bottom = up + "px";
+    btns.append(button);
+  };
+  place(holdKey("⤒", c.jump), 0, 0, true);
+  place(holdKey(CASTLE ? "⚔" : "🎯", c.attack), 78, 22, true);
+  place(holdKey(CASTLE ? "🔥" : "💣", c.fire), 10, 82);
+  if (!CASTLE) {
+    place(holdKey("🔭", c.aim), 66, 104);
+    place(holdKey("⬇", c.crouch), 158, 0);
   }
-  pad.append(dpad, acts);
-  return pad;
+  half.append(btns);
+
+  let stickId = null, stickX = 0, stickY = 0;
+  let lookId = null, lookX = 0, lookY = 0;
+  half.addEventListener("pointerdown", e => {
+    if (e.target.closest(".tb")) return;   // buttons handle their own touches
+    e.preventDefault();
+    const rect = half.getBoundingClientRect();
+    const fromOuterEdge = outer === "left" ? e.clientX - rect.left : rect.right - e.clientX;
+    if (stickId === null && fromOuterEdge < rect.width * 0.45 && e.clientY - rect.top > rect.height * 0.35) {
+      stickId = e.pointerId;
+      stickX = e.clientX;
+      stickY = e.clientY;
+      base.classList.add("active");
+      base.style.left = (e.clientX - rect.left) + "px";
+      base.style.top = (e.clientY - rect.top) + "px";
+    } else if (lookId === null) {
+      lookId = e.pointerId;
+      lookX = e.clientX;
+      lookY = e.clientY;
+    } else {
+      return;
+    }
+    try { half.setPointerCapture(e.pointerId); } catch (err) {}   // keep getting moves even if the finger leaves the half
+  });
+  half.addEventListener("pointermove", e => {
+    const p = players[index];
+    if (e.pointerId === stickId) {
+      let dx = (e.clientX - stickX) / STICK_RADIUS, dy = (e.clientY - stickY) / STICK_RADIUS;
+      const len = Math.hypot(dx, dy);
+      if (len > 1) { dx /= len; dy /= len; }
+      knob.style.transform = "translate(" + dx * STICK_RADIUS + "px, " + dy * STICK_RADIUS + "px)";
+      p.stick = { x: dx, y: dy };
+    } else if (e.pointerId === lookId) {
+      const speed = TOUCH_LOOK_SPEED * (1 - 0.6 * (p.aim || 0));   // slower while looking through the scope
+      p.yaw -= (e.clientX - lookX) * speed;
+      p.pitch = Math.max(-1.2, Math.min(1.2, p.pitch - (e.clientY - lookY) * speed));
+      lookX = e.clientX;
+      lookY = e.clientY;
+    }
+  });
+  const release = e => {
+    if (e.pointerId === stickId) { stickId = null; players[index].stick = null; restBase(); }
+    if (e.pointerId === lookId) lookId = null;
+  };
+  half.addEventListener("pointerup", release);
+  half.addEventListener("pointercancel", release);
+  addEventListener("resize", restBase);
+  requestAnimationFrame(restBase);
+  return half;
 }
 
 function toggleFullscreen() {
@@ -286,7 +368,7 @@ topButtons.id = "topButtons";
 const tapButton = (label, onTap) => { const b = touchButton(label, () => {}); b.addEventListener("click", onTap); return b; };
 topButtons.append(tapButton("↻", () => restart()), tapButton("☰", () => { location.href = "index.html"; }));
 if (document.fullscreenEnabled || document.webkitFullscreenEnabled) topButtons.append(tapButton("⛶", toggleFullscreen));
-touchArea.append(makePad(CONTROLS[0], "p1"), makePad(CONTROLS[1], "p2"), topButtons);
+touchArea.append(makeTouchHalf(0), makeTouchHalf(1), topButtons);
 document.addEventListener("gesturestart", e => e.preventDefault());   // no pinch zoom in Safari
 
 // ---------- Renderer ----------
@@ -2161,7 +2243,8 @@ function updatePlayer(p, other, dt) {
   // Crouching and aiming make you walk slower
   const slow = (1 - 0.55 * p.crouch) * (1 - 0.45 * p.aim);
   // With the mouse, A and D step sideways (the mouse turns). Without it, A/D and ←/→ turn.
-  const strafe = p === players[0] && mouseLocked();
+  // On a phone you look around by dragging, so the joystick steps sideways too
+  const strafe = (p === players[0] && mouseLocked()) || isPhone;
   let side = 0;
   if (strafe) {
     if (keys[c.left]) side -= 1;
@@ -2173,6 +2256,11 @@ function updatePlayer(p, other, dt) {
   let move = 0;
   if (keys[c.forward]) move += 1;
   if (keys[c.back]) move -= 0.6;
+  if (p.stick) {
+    // Joystick: push up to walk forward, sideways to step sideways, as far as you push it
+    side = p.stick.x;
+    move = -p.stick.y * (p.stick.y > 0 ? 0.6 : 1);
+  }
   if (move || side) {
     // (-dir.z, dir.x) points to the right of where you look
     const dx = dir.x * move - dir.z * side * 0.8;
