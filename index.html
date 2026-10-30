@@ -1,0 +1,1108 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <title>Knight Fight</title>
+  <style>
+    body { margin: 0; background: #222; color: #eee; font-family: sans-serif; text-align: center; }
+    /* The arena is 1600x1000; shrink it to fit the window */
+    #wrap { position: relative; margin: 10px auto; width: min(96vw, calc((100vh - 130px) * 1.6)); }
+    canvas { background: #87ceeb; display: block; width: 100%; height: auto; border: 4px solid #444; box-sizing: border-box; }
+    /* Menus, drawn on top of the arena */
+    .menu { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+            justify-content: center; gap: 16px; background: rgba(0, 0, 0, 0.6); }
+    .menu h1 { font-size: 48px; margin: 0 0 12px; }
+    .menu button { font-size: 22px; padding: 12px 28px; min-width: 340px; cursor: pointer;
+                   border: 3px solid #444; border-radius: 8px; background: #f1c40f; }
+    .menu button:hover { background: #ffd84d; }
+    .menu button:disabled { background: #888; cursor: not-allowed; }
+    .note { min-height: 1.2em; font-size: 18px; }
+    #searchResults { display: flex; flex-direction: column; gap: 8px; }
+    #searchResults button { background: #fff; }
+    #friendsList { display: flex; flex-direction: column; gap: 8px; max-height: 50%; overflow-y: auto; }
+    #friendsList h2 { font-size: 22px; margin: 12px 0 0; }
+    .friendRow { display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+                 border-radius: 8px; background: rgba(255, 255, 255, 0.12); }
+    .friendRow span { font-size: 22px; min-width: 160px; text-align: left; }
+    .menu .friendRow button { min-width: 0; font-size: 18px; padding: 6px 14px; }
+    /* Touch buttons for phones: each player gets arrows on their side plus action buttons */
+    #touchControls { display: none; position: absolute; inset: 0; pointer-events: none; }
+    .touchPad { position: absolute; bottom: 8px; display: flex; gap: 10px; align-items: flex-end; }
+    .touchPad.left { left: 8px; }
+    .touchPad.right { right: 8px; }
+    .dpad { display: grid; grid-template-columns: repeat(3, 46px); grid-template-rows: repeat(2, 46px); gap: 4px; }
+    .actions { display: flex; flex-direction: column; gap: 4px; }
+    .touchButton { width: 46px; height: 46px; padding: 0; border-radius: 50%; font-size: 20px; color: #fff;
+                   background: rgba(0, 0, 0, 0.35); border: 2px solid rgba(255, 255, 255, 0.7);
+                   pointer-events: auto; touch-action: none; user-select: none; -webkit-user-select: none;
+                   -webkit-touch-callout: none; }
+    .left .touchButton { border-color: rgba(231, 76, 60, 0.9); }
+    .right .touchButton { border-color: rgba(52, 152, 219, 0.9); }
+    .touchButton:active { background: rgba(255, 255, 255, 0.4); }
+    #touchTop { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
+    #rotateHint { display: none; }
+    @media (pointer: coarse) {
+      /* On phones and tablets: use the whole screen and smaller menus */
+      body { overflow: hidden; }
+      body > p { display: none; }
+      #wrap { margin: 0 auto; width: min(100vw, 100vh * 1.6); }
+      .menu { gap: 8px; }
+      .menu h1 { font-size: 28px; margin: 0; }
+      .menu button { font-size: 16px; padding: 8px 16px; min-width: 240px; }
+      .menu input { font-size: 16px; padding: 8px; width: 240px; }
+      .note { font-size: 14px; }
+    }
+    @media (pointer: coarse) and (orientation: portrait) {
+      #rotateHint { display: flex; position: fixed; z-index: 10; background: #222; font-size: 24px; padding: 20px; }
+    }
+    .menu input { font-size: 22px; padding: 12px; width: 340px; box-sizing: border-box;
+                  border: 3px solid #444; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div id="wrap">
+    <canvas id="game" width="1600" height="1000"></canvas>
+    <!-- Shown first: choose whether to log in -->
+    <div id="loginMenu" class="menu">
+      <h1>Knight Fight</h1>
+      <button id="noLogin">1 - Play without logging in</button>
+      <button id="logIn">2 - Log in</button>
+      <p id="loginNote" class="note"></p>
+    </div>
+    <!-- Log in: just a username -->
+    <div id="loginForm" class="menu" style="display: none">
+      <h1>Log in</h1>
+      <input id="usernameInput" maxlength="20" placeholder="Username" autocomplete="off">
+      <button id="loginConfirm">Log in</button>
+      <button id="loginBack">Back</button>
+      <p id="loginFormNote" class="note"></p>
+    </div>
+    <div id="menu" class="menu" style="display: none">
+      <h1>Knight Fight</h1>
+      <p id="userLabel" class="note"></p>
+      <button id="oneComputer">1 - Play on one computer</button>
+      <button id="twoComputers">2 - Play on two computers</button>
+      <button id="toLoginMenu">3 - Go to the login menu</button>
+      <button id="friends">4 - Friends</button>
+      <p id="menuNote" class="note"></p>
+    </div>
+    <!-- Friends menu: the options don't do anything yet -->
+    <div id="friendsMenu" class="menu" style="display: none">
+      <h1>Friends</h1>
+      <button id="addFriend">1 - Add friend</button>
+      <button id="yourFriends">2 - Your friends</button>
+      <button>3 - Friend invites</button>
+      <button id="friendsBack">Back</button>
+    </div>
+    <!-- Add friend: type someone's username (searching comes later) -->
+    <div id="addFriendMenu" class="menu" style="display: none">
+      <h1>Add friend</h1>
+      <input id="friendInput" maxlength="20" placeholder="Type a username" autocomplete="off">
+      <div id="searchResults"></div>
+      <button id="addFriendBack">Back</button>
+    </div>
+    <!-- A player's page, opened from the search results -->
+    <div id="playerPage" class="menu" style="display: none">
+      <h1 id="playerName"></h1>
+      <button id="addAsFriend">Add friend</button>
+      <button id="playerBack">Back</button>
+      <p id="playerNote" class="note"></p>
+    </div>
+    <!-- Your friends: a list where each friend can be invited or blocked -->
+    <div id="friendsListMenu" class="menu" style="display: none">
+      <h1>Your friends</h1>
+      <div id="friendsList"></div>
+      <button id="friendsListBack">Back</button>
+      <p id="friendsListNote" class="note"></p>
+    </div>
+    <!-- Touch buttons, only shown on phones and tablets while playing -->
+    <div id="touchControls"></div>
+    <div id="rotateHint" class="menu">Turn your phone sideways to play</div>
+  </div>
+  <p>Player 1: W A S D to move, Space to attack, E for fireball, Left Shift to sprint &nbsp;|&nbsp; Player 2: Arrow keys to move, Enter to attack, Right Shift for fireball, - to sprint</p>
+  <p>Hold up (W / Arrow up) in a waterfall to swim to the high platforms &nbsp;|&nbsp; Press R to restart &nbsp;|&nbsp; Esc for the menu</p>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+
+const GROUND = 940;   // y position of the ground
+const GRAVITY = 0.6;
+const SPEED = 4;
+const JUMP = 12;
+const MAX_HEALTH = 100;
+const DAMAGE = 10;
+const FIREBALL_DAMAGE = 15;
+const FIREBALL_SPEED = 7;
+const FIREBALL_COOLDOWN = 120; // frames (about 2 seconds)
+
+// Sprinting uses stamina. Run it all out and you're tired (slow) until it refills to TIRED_UNTIL.
+const MAX_STAMINA = 100;
+const SPRINT_SPEED = 6.5;
+const TIRED_SPEED = 2.5;
+const STAMINA_DRAIN = 0.7;   // per frame while sprinting
+const STAMINA_REGEN = 0.3;   // per frame while not sprinting
+const TIRED_UNTIL = 50;
+
+// Platforms you can jump up onto (y is the top surface)
+// The left and right halves of the arena mirror each other.
+const platforms = [
+  { x: 180,  y: 840, width: 140 },
+  { x: 1280, y: 840, width: 140 },
+  { x: 340,  y: 840, width: 120 },   // above a lava pit
+  { x: 1140, y: 840, width: 120 },   // above a lava pit
+  { x: 700,  y: 840, width: 200 },
+  { x: 480,  y: 740, width: 180 },
+  { x: 940,  y: 740, width: 180 },
+  { x: 250,  y: 640, width: 160 },
+  { x: 1190, y: 640, width: 160 },
+  { x: 700,  y: 640, width: 200 },
+  { x: 450,  y: 540, width: 160 },
+  { x: 990,  y: 540, width: 160 },
+  { x: 220,  y: 440, width: 150 },
+  { x: 1230, y: 440, width: 150 },
+  { x: 560,  y: 440, width: 140 },
+  { x: 900,  y: 440, width: 140 },
+  // High platforms, too high to jump to: swim up a waterfall to reach them
+  { x: 0,    y: 320, width: 180 },
+  { x: 1420, y: 320, width: 180 },
+  { x: 650,  y: 220, width: 300 }
+];
+
+// Waterfalls run from their top down to the ground
+const WATERFALL_WIDTH = 50;
+const waterfalls = [
+  { x: 0,    top: 250 },
+  { x: 1550, top: 250 },
+  { x: 775,  top: 150 },
+  { x: 480,  top: 380 },
+  { x: 1070, top: 380 }
+];
+const SWIM_SPEED = 3;
+const SINK_SPEED = 1.5;
+let frame = 0;  // counts frames, used to animate the water
+
+function inWater(k) {
+  const middle = k.x + k.width / 2;
+  return waterfalls.some(w => middle > w.x && middle < w.x + WATERFALL_WIDTH && k.y > w.top);
+}
+
+// Lava pits in the ground: they hurt and bounce you up
+const lavaPits = [
+  { x: 360,  width: 80 },
+  { x: 560,  width: 80 },
+  { x: 960,  width: 80 },
+  { x: 1160, width: 80 }
+];
+const LAVA_DAMAGE = 8;
+const LAVA_BOUNCE = 14;
+
+// Hearts: walk into one to get some health back. A new one appears every 10 seconds.
+const HEART_HEAL = 15;
+const HEART_INTERVAL = 600;  // frames (about 10 seconds)
+const MAX_HEARTS = 6;
+let hearts = [];
+let heartTimer = HEART_INTERVAL;
+
+// Bats fly around randomly. If one touches a knight it latches on and drinks
+// blood until that knight swings their sword.
+const BAT_COUNT = 3;
+const BAT_SPEED = 2;
+const BAT_DRAIN_EVERY = 20;   // frames between each point of health lost
+let bats = [];
+
+let fireballs = [];
+let explosions = [];
+
+// Which keys are currently held down
+const keys = {};
+
+function makeKnight(x, color, facing, controls) {
+  return {
+    x: x, y: GROUND, vy: 0,
+    onGround: true,        // standing on the ground or a platform
+    width: 40, height: 70,
+    color: color,
+    facing: facing,        // 1 = right, -1 = left
+    health: MAX_HEALTH,
+    attackTimer: 0,        // frames left in the current sword swing
+    cooldown: 0,           // frames until the knight can attack again
+    hasHit: false,         // so one swing only hits once
+    fireCooldown: 0,       // frames until the knight can shoot again
+    stamina: MAX_STAMINA,
+    tired: false,          // true after running out of stamina
+    controls: controls
+  };
+}
+
+let p1, p2, winner;
+let started = false;   // false while a menu is showing
+let loggedIn = false;  // you must be logged in to play on two computers
+
+const loginMenu = document.getElementById("loginMenu");
+const loginNote = document.getElementById("loginNote");
+const menu = document.getElementById("menu");
+const menuNote = document.getElementById("menuNote");
+const twoComputersButton = document.getElementById("twoComputers");
+const loginForm = document.getElementById("loginForm");
+const usernameInput = document.getElementById("usernameInput");
+const loginFormNote = document.getElementById("loginFormNote");
+const userLabel = document.getElementById("userLabel");
+const thirdButton = document.getElementById("toLoginMenu");
+const friendsButton = document.getElementById("friends");
+
+// The browser remembers your username, so you skip the login menu next time
+const LOGIN_KEY = "knightFightUsername";
+
+function rememberLogin(name) {
+  try { localStorage.setItem(LOGIN_KEY, name); } catch (e) {}
+}
+
+function forgetLogin() {
+  try { localStorage.removeItem(LOGIN_KEY); } catch (e) {}
+}
+
+function savedUsername() {
+  try { return localStorage.getItem(LOGIN_KEY) || ""; } catch (e) { return ""; }
+}
+
+// Update the main menu for a logged in (name) or logged out ("") player
+function setLoggedIn(name) {
+  loggedIn = name !== "";
+  twoComputersButton.disabled = !loggedIn;
+  twoComputersButton.textContent = loggedIn ? "2 - Play on two computers" : "2 - Play on two computers (log in first)";
+  userLabel.textContent = loggedIn ? "Logged in as " + name : "";
+  thirdButton.textContent = loggedIn ? "3 - Log out" : "3 - Go to the login menu";
+  friendsButton.disabled = !loggedIn;
+  friendsButton.textContent = loggedIn ? "4 - Friends" : "4 - Friends (log in first)";
+}
+
+// Option 3 in the main menu: log out if logged in, otherwise go to the login menu
+function thirdOption() {
+  if (loggedIn) {
+    forgetLogin();
+    setLoggedIn("");
+    showLoginMenu();
+    loginNote.textContent = "You are logged out.";
+  } else {
+    showLoginMenu();
+  }
+}
+
+function playWithoutLogin() {
+  forgetLogin();
+  setLoggedIn("");
+  loginMenu.style.display = "none";
+  menu.style.display = "flex";
+}
+
+function openLoginForm() {
+  loginMenu.style.display = "none";
+  loginFormNote.textContent = "";
+  usernameInput.value = "";
+  loginForm.style.display = "flex";
+  usernameInput.focus();
+}
+
+function confirmLogin() {
+  const name = usernameInput.value.trim();
+  if (name === "") {
+    loginFormNote.textContent = "Type a username first.";
+    return;
+  }
+  rememberLogin(name);
+  setLoggedIn(name);
+  loginForm.style.display = "none";
+  menu.style.display = "flex";
+  document.activeElement.blur();  // so Enter doesn't press a button by accident
+}
+
+function closeLoginForm() {
+  loginForm.style.display = "none";
+  loginMenu.style.display = "flex";
+}
+
+// Already logged in: go straight to the main menu with every option open
+if (savedUsername() !== "") {
+  setLoggedIn(savedUsername());
+  loginMenu.style.display = "none";
+  menu.style.display = "flex";
+}
+
+function showLoginMenu() {
+  menu.style.display = "none";
+  menuNote.textContent = "";
+  loginNote.textContent = "";
+  loginMenu.style.display = "flex";
+}
+
+document.getElementById("noLogin").addEventListener("click", playWithoutLogin);
+thirdButton.addEventListener("click", thirdOption);
+
+const friendsMenu = document.getElementById("friendsMenu");
+
+function openFriendsMenu() {
+  if (!loggedIn) {
+    menuNote.textContent = "You need to log in to see your friends.";
+    return;
+  }
+  menu.style.display = "none";
+  menuNote.textContent = "";
+  friendsMenu.style.display = "flex";
+}
+
+function closeFriendsMenu() {
+  friendsMenu.style.display = "none";
+  menu.style.display = "flex";
+}
+
+document.getElementById("friends").addEventListener("click", openFriendsMenu);
+document.getElementById("friendsBack").addEventListener("click", closeFriendsMenu);
+
+const addFriendMenu = document.getElementById("addFriendMenu");
+const friendInput = document.getElementById("friendInput");
+
+function openAddFriend() {
+  friendsMenu.style.display = "none";
+  friendInput.value = "";
+  searchResults.innerHTML = "";
+  addFriendMenu.style.display = "flex";
+  friendInput.focus();
+}
+
+function closeAddFriend() {
+  addFriendMenu.style.display = "none";
+  friendsMenu.style.display = "flex";
+}
+
+document.getElementById("addFriend").addEventListener("click", openAddFriend);
+document.getElementById("addFriendBack").addEventListener("click", closeAddFriend);
+
+// TEST USER: "1" is a pretend player so the search has something to find.
+// To remove it, change the line to: const TEST_USERS = [];
+const TEST_USERS = ["1"];
+
+const searchResults = document.getElementById("searchResults");
+const playerPage = document.getElementById("playerPage");
+const playerName = document.getElementById("playerName");
+
+// Show every player whose username contains what you typed
+function showSearchResults() {
+  const text = friendInput.value.trim().toLowerCase();
+  searchResults.innerHTML = "";
+  if (text === "") return;
+  for (const name of TEST_USERS) {
+    if (name.toLowerCase().includes(text) && !blocked.includes(name)) {
+      const button = document.createElement("button");
+      button.textContent = name;
+      button.addEventListener("click", () => openPlayerPage(name));
+      searchResults.appendChild(button);
+    }
+  }
+}
+
+function openPlayerPage(name) {
+  addFriendMenu.style.display = "none";
+  playerName.textContent = name;
+  playerNote.textContent = friends.includes(name) ? name + " is already your friend." : "";
+  playerPage.style.display = "flex";
+}
+
+function closePlayerPage() {
+  playerPage.style.display = "none";
+  addFriendMenu.style.display = "flex";
+}
+
+friendInput.addEventListener("input", showSearchResults);
+document.getElementById("playerBack").addEventListener("click", closePlayerPage);
+
+// Friends and blocked players are saved in the browser
+const FRIENDS_KEY = "knightFightFriends";
+const BLOCKED_KEY = "knightFightBlocked";
+
+function loadList(key) {
+  try { return JSON.parse(localStorage.getItem(key)) || []; } catch (e) { return []; }
+}
+
+function saveList(key, list) {
+  try { localStorage.setItem(key, JSON.stringify(list)); } catch (e) {}
+}
+
+let friends = loadList(FRIENDS_KEY);
+let blocked = loadList(BLOCKED_KEY);
+
+const playerNote = document.getElementById("playerNote");
+const friendsListMenu = document.getElementById("friendsListMenu");
+const friendsList = document.getElementById("friendsList");
+const friendsListNote = document.getElementById("friendsListNote");
+
+function addAsFriend() {
+  const name = playerName.textContent;
+  if (friends.includes(name)) {
+    playerNote.textContent = name + " is already your friend.";
+    return;
+  }
+  friends.push(name);
+  saveList(FRIENDS_KEY, friends);
+  playerNote.textContent = name + " is now your friend!";
+}
+
+function blockPlayer(name) {
+  friends = friends.filter(n => n !== name);
+  blocked.push(name);
+  saveList(FRIENDS_KEY, friends);
+  saveList(BLOCKED_KEY, blocked);
+  showFriendsList();
+  friendsListNote.textContent = name + " is blocked.";
+}
+
+function unblockPlayer(name) {
+  blocked = blocked.filter(n => n !== name);
+  saveList(BLOCKED_KEY, blocked);
+  showFriendsList();
+  friendsListNote.textContent = name + " is unblocked.";
+}
+
+// One row in the list: the name and its buttons
+function addRow(name, buttons) {
+  const row = document.createElement("div");
+  row.className = "friendRow";
+  const label = document.createElement("span");
+  label.textContent = name;
+  row.appendChild(label);
+  for (const [text, onClick] of buttons) {
+    const button = document.createElement("button");
+    button.textContent = text;
+    button.addEventListener("click", onClick);
+    row.appendChild(button);
+  }
+  friendsList.appendChild(row);
+}
+
+function showFriendsList() {
+  friendsMenu.style.display = "none";
+  friendsListNote.textContent = "";
+  friendsList.innerHTML = "";
+  if (friends.length === 0) {
+    const empty = document.createElement("p");
+    empty.textContent = "No friends yet. Find some in Add friend.";
+    friendsList.appendChild(empty);
+  }
+  for (const name of friends) {
+    addRow(name, [
+      ["Invite to play", () => { friendsListNote.textContent = "Inviting " + name + " to play comes later."; }],
+      ["Block", () => blockPlayer(name)]
+    ]);
+  }
+  // Blocked players are listed too, so you can unblock them
+  if (blocked.length > 0) {
+    const heading = document.createElement("h2");
+    heading.textContent = "Blocked";
+    friendsList.appendChild(heading);
+    for (const name of blocked) {
+      addRow(name, [["Unblock", () => unblockPlayer(name)]]);
+    }
+  }
+  friendsListMenu.style.display = "flex";
+}
+
+function closeFriendsList() {
+  friendsListMenu.style.display = "none";
+  friendsMenu.style.display = "flex";
+}
+
+document.getElementById("addAsFriend").addEventListener("click", addAsFriend);
+document.getElementById("yourFriends").addEventListener("click", showFriendsList);
+document.getElementById("friendsListBack").addEventListener("click", closeFriendsList);
+document.getElementById("logIn").addEventListener("click", openLoginForm);
+document.getElementById("loginConfirm").addEventListener("click", confirmLogin);
+document.getElementById("loginBack").addEventListener("click", closeLoginForm);
+
+function startOneComputer() {
+  reset();
+  menu.style.display = "none";
+  menuNote.textContent = "";
+  document.activeElement.blur();  // so Space and Enter don't press the button again
+  started = true;
+  updateTouchControls();
+}
+
+function startTwoComputers() {
+  if (!loggedIn) {
+    menuNote.textContent = "You need to log in to play on two computers.";
+    return;
+  }
+  menuNote.textContent = "Coming soon! Playing on two computers isn't ready yet.";
+}
+
+function showMenu() {
+  started = false;
+  menu.style.display = "flex";
+  updateTouchControls();
+}
+
+const P1_CONTROLS = { left: "a", right: "d", up: "w", down: "s", attack: " ", fire: "e", sprint: "ShiftLeft" };
+const P2_CONTROLS = { left: "ArrowLeft", right: "ArrowRight", up: "ArrowUp", down: "ArrowDown", attack: "Enter", fire: "ShiftRight", sprint: "Slash" };
+
+// Touch buttons for phones and tablets. Holding a button is the same as holding down its key.
+const touchControls = document.getElementById("touchControls");
+
+function makeTouchButton(label, onDown, onUp) {
+  const button = document.createElement("button");
+  button.className = "touchButton";
+  button.textContent = label;
+  button.addEventListener("pointerdown", e => { e.preventDefault(); onDown(); });
+  for (const type of ["pointerup", "pointercancel", "pointerleave"]) {
+    button.addEventListener(type, e => { e.preventDefault(); if (onUp) onUp(); });
+  }
+  button.addEventListener("contextmenu", e => e.preventDefault());  // no long-press menu
+  return button;
+}
+
+function holdKey(label, keyName) {
+  return makeTouchButton(label, () => { keys[keyName] = true; }, () => { keys[keyName] = false; });
+}
+
+// One player's buttons: arrows (jump, left, block, right) and attack, fireball, sprint
+function makeTouchPad(c, side) {
+  const pad = document.createElement("div");
+  pad.className = "touchPad " + side;
+  const dpad = document.createElement("div");
+  dpad.className = "dpad";
+  dpad.append(document.createElement("span"), holdKey("▲", c.up), document.createElement("span"),
+              holdKey("◀", c.left), holdKey("▼", c.down), holdKey("▶", c.right));
+  const actions = document.createElement("div");
+  actions.className = "actions";
+  actions.append(holdKey("⚔", c.attack), holdKey("🔥", c.fire), holdKey("»", c.sprint));
+  // Arrows on the outside edge, action buttons towards the middle
+  if (side === "left") pad.append(dpad, actions);
+  else pad.append(actions, dpad);
+  return pad;
+}
+
+// Restart and menu react on a normal tap (finger lifted), so the tap can't also hit the menu that opens
+function tapButton(label, onTap) {
+  const button = document.createElement("button");
+  button.className = "touchButton";
+  button.textContent = label;
+  button.addEventListener("click", onTap);
+  return button;
+}
+
+const touchTop = document.createElement("div");
+touchTop.id = "touchTop";
+touchTop.append(tapButton("↻", reset), tapButton("☰", showMenu));
+touchControls.append(makeTouchPad(P1_CONTROLS, "left"), makeTouchPad(P2_CONTROLS, "right"), touchTop);
+
+function updateTouchControls() {
+  const isTouch = matchMedia("(pointer: coarse)").matches;
+  touchControls.style.display = isTouch && started ? "block" : "none";
+  if (!started) for (const k in keys) keys[k] = false;  // let go of every button
+}
+
+document.getElementById("oneComputer").addEventListener("click", startOneComputer);
+document.getElementById("twoComputers").addEventListener("click", startTwoComputers);
+
+function reset() {
+  p1 = makeKnight(150, "#c0392b", 1, P1_CONTROLS);
+  p2 = makeKnight(canvas.width - 190, "#2c5aa0", -1, P2_CONTROLS);
+  fireballs = [];
+  explosions = [];
+  hearts = [];
+  spawnHeart();
+  spawnHeart();
+  spawnHeart();
+  heartTimer = HEART_INTERVAL;
+  bats = [];
+  for (let i = 0; i < BAT_COUNT; i++) {
+    bats.push({
+      x: 300 + Math.random() * (canvas.width - 600),
+      y: 150 + Math.random() * 400,
+      vx: 0, vy: 0,
+      turnTimer: 0,    // frames until it picks a new direction
+      target: null,    // the knight it is stuck on
+      drainTimer: 0,
+      cooldown: 0      // frames until it can latch on again after being knocked off
+    });
+  }
+  winner = null;
+}
+reset();
+
+document.addEventListener("keydown", function (e) {
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  keys[key] = true;
+  keys[e.code] = true;   // e.code tells left and right Shift apart
+  if (loginForm.style.display !== "none") {
+    // Typing a username: Enter logs in, Esc goes back. Other keys just type.
+    if (key === "Enter") confirmLogin();
+    if (key === "Escape") closeLoginForm();
+    return;
+  }
+  if (friendsListMenu.style.display !== "none") {
+    // In the friends list: Esc goes back
+    if (key === "Escape") closeFriendsList();
+    return;
+  }
+  if (playerPage.style.display !== "none") {
+    // On a player's page: Esc goes back to the search
+    if (key === "Escape") closePlayerPage();
+    return;
+  }
+  if (addFriendMenu.style.display !== "none") {
+    // Typing a friend's username: Esc goes back, other keys just type
+    if (key === "Escape") closeAddFriend();
+    return;
+  }
+  if (friendsMenu.style.display !== "none") {
+    // In the friends menu: Esc goes back
+    if (key === "Escape") closeFriendsMenu();
+    return;
+  }
+  if (loginMenu.style.display !== "none") {
+    // In the login menu: 1 and 2 pick an option
+    if (key === "1") playWithoutLogin();
+    if (key === "2") { e.preventDefault(); openLoginForm(); }  // don't type "2" into the box
+    return;
+  }
+  if (!started) {
+    // In the menu: 1 to 4 pick an option
+    if (key === "1") startOneComputer();
+    if (key === "2") startTwoComputers();
+    if (key === "3") thirdOption();
+    if (key === "4") openFriendsMenu();
+    return;
+  }
+  if (key === "r") reset();
+  if (key === "Escape") showMenu();
+  // Stop space and arrow keys from scrolling the page
+  // (Slash is the "-" key on a Swedish keyboard and "/" on a US one; "/" opens quick find in Firefox)
+  if ([" ", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Enter"].includes(key) || e.code === "Slash") e.preventDefault();
+});
+document.addEventListener("keyup", function (e) {
+  const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
+  keys[key] = false;
+  keys[e.code] = false;
+});
+
+function updateKnight(k, other) {
+  const c = k.controls;
+  const blocking = keys[c.down] && k.onGround;
+
+  // Sprint while there is stamina; running out makes you tired until it refills
+  const moving = keys[c.left] || keys[c.right];
+  const sprinting = keys[c.sprint] && moving && !k.tired && !blocking;
+  if (sprinting) {
+    k.stamina -= STAMINA_DRAIN;
+    if (k.stamina <= 0) { k.stamina = 0; k.tired = true; }
+  } else {
+    k.stamina = Math.min(MAX_STAMINA, k.stamina + STAMINA_REGEN);
+    if (k.tired && k.stamina >= TIRED_UNTIL) k.tired = false;
+  }
+
+  // Move left and right
+  let speed = SPEED;
+  if (sprinting) speed = SPRINT_SPEED;
+  if (k.tired) speed = TIRED_SPEED;
+  if (blocking) speed = SPEED / 3;
+  if (keys[c.left])  { k.x -= speed; k.facing = -1; }
+  if (keys[c.right]) { k.x += speed; k.facing = 1; }
+
+  // Jump
+  if (keys[c.up] && k.onGround) k.vy = -JUMP;
+
+  // Gravity, or swimming in a waterfall: hold up to rise, otherwise sink slowly
+  const prevY = k.y;
+  if (inWater(k)) {
+    k.vy = keys[c.up] ? -SWIM_SPEED : SINK_SPEED;
+  } else {
+    k.vy += GRAVITY;
+  }
+  k.y += k.vy;
+  k.onGround = false;
+  if (k.y >= GROUND) { k.y = GROUND; k.vy = 0; k.onGround = true; }
+
+  // Land on a platform when falling onto it from above
+  for (const p of platforms) {
+    const above = prevY <= p.y && k.y >= p.y;
+    const insideX = k.x + k.width > p.x && k.x < p.x + p.width;
+    if (k.vy >= 0 && above && insideX) { k.y = p.y; k.vy = 0; k.onGround = true; }
+  }
+
+  // Touching the lava: take some damage and bounce up out of it
+  const middle = k.x + k.width / 2;
+  const inLava = lavaPits.some(pit => middle > pit.x && middle < pit.x + pit.width);
+  if (k.y === GROUND && inLava) {
+    k.health -= LAVA_DAMAGE;
+    k.vy = -LAVA_BOUNCE;
+    k.onGround = false;
+    explosions.push({ x: middle, y: GROUND, timer: 0 });
+  }
+
+  // Stay inside the arena
+  k.x = Math.max(0, Math.min(canvas.width - k.width, k.x));
+
+  // Start an attack
+  if (keys[c.attack] && k.cooldown === 0 && !blocking) {
+    k.attackTimer = 12;
+    k.cooldown = 30;
+    k.hasHit = false;
+  }
+  if (k.attackTimer > 0) k.attackTimer--;
+  if (k.cooldown > 0) k.cooldown--;
+
+  // Shoot a fireball (only when the cooldown has run out)
+  if (keys[c.fire] && k.fireCooldown === 0 && !blocking) {
+    fireballs.push({
+      x: k.facing === 1 ? k.x + k.width + 10 : k.x - 10,
+      y: k.y - k.height + 35,
+      vx: k.facing * FIREBALL_SPEED,
+      owner: k
+    });
+    k.fireCooldown = FIREBALL_COOLDOWN;
+  }
+  if (k.fireCooldown > 0) k.fireCooldown--;
+
+  // Check if the sword hits the other knight
+  if (k.attackTimer > 0 && !k.hasHit) {
+    const sword = swordBox(k);
+    if (overlaps(sword, other)) {
+      hit(other, DAMAGE, k.facing);
+      k.hasHit = true;
+    }
+  }
+  k.blocking = blocking;
+}
+
+// Damage a knight. direction is the way the hit is travelling (1 = right, -1 = left).
+function hit(target, damage, direction) {
+  const blocking = keys[target.controls.down] && target.onGround && target.facing === -direction;
+  target.health -= blocking ? damage / 5 : damage;
+  target.x += direction * 25;  // knockback
+}
+
+function updateFireballs() {
+  for (const f of fireballs) {
+    f.x += f.vx;
+    const target = f.owner === p1 ? p2 : p1;
+    const box = { x: f.x - 10, y: f.y - 10, width: 20, height: 20 };
+    if (overlaps(box, target)) {
+      hit(target, FIREBALL_DAMAGE, Math.sign(f.vx));
+      explosions.push({ x: f.x, y: f.y, timer: 0 });
+      f.done = true;
+    }
+    if (f.x < -20 || f.x > canvas.width + 20) f.done = true;
+  }
+  fireballs = fireballs.filter(f => !f.done);
+}
+
+// Put a heart at a random spot on the ground (not in the lava) or on a platform
+function spawnHeart() {
+  // The ground pieces between the lava pits
+  const surfaces = [];
+  let start = 0;
+  for (const pit of lavaPits) {
+    surfaces.push({ x: start, y: GROUND, width: pit.x - start });
+    start = pit.x + pit.width;
+  }
+  surfaces.push({ x: start, y: GROUND, width: canvas.width - start });
+  surfaces.push(...platforms);
+
+  const s = surfaces[Math.floor(Math.random() * surfaces.length)];
+  hearts.push({ x: s.x + 15 + Math.random() * (s.width - 30), y: s.y - 25 });
+}
+
+function updateHearts() {
+  heartTimer--;
+  if (heartTimer <= 0) {
+    if (hearts.length < MAX_HEARTS) spawnHeart();
+    heartTimer = HEART_INTERVAL;
+  }
+  for (const h of hearts) {
+    const box = { x: h.x - 12, y: h.y - 12, width: 24, height: 24 };
+    for (const k of [p1, p2]) {
+      if (!h.taken && overlaps(box, k)) {
+        k.health = Math.min(MAX_HEALTH, k.health + HEART_HEAL);
+        h.taken = true;
+      }
+    }
+  }
+  hearts = hearts.filter(h => !h.taken);
+}
+
+function drawHeart(h) {
+  ctx.fillStyle = "#e0245e";
+  ctx.beginPath();
+  ctx.arc(h.x - 5, h.y - 3, 6, 0, Math.PI * 2);
+  ctx.arc(h.x + 5, h.y - 3, 6, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.moveTo(h.x - 11, h.y - 1);
+  ctx.lineTo(h.x + 11, h.y - 1);
+  ctx.lineTo(h.x, h.y + 11);
+  ctx.fill();
+}
+
+function updateBats() {
+  for (const b of bats) {
+    if (b.target) {
+      const k = b.target;
+      // Hang on to the knight's shoulder
+      b.x = k.x + k.width / 2 + b.offset;
+      b.y = k.y - k.height + 20;
+      // Drink blood
+      b.drainTimer--;
+      if (b.drainTimer <= 0) {
+        k.health -= 1;
+        b.drainTimer = BAT_DRAIN_EVERY;
+      }
+      // A sword swing knocks it off
+      if (k.attackTimer > 0) {
+        b.target = null;
+        b.cooldown = 120;
+        b.vx = (Math.random() < 0.5 ? -1 : 1) * BAT_SPEED * 2;
+        b.vy = -BAT_SPEED * 2;
+        b.turnTimer = 40;
+      }
+      continue;
+    }
+
+    // Fly around, picking a new random direction now and then
+    b.turnTimer--;
+    if (b.turnTimer <= 0) {
+      const angle = Math.random() * Math.PI * 2;
+      b.vx = Math.cos(angle) * BAT_SPEED;
+      b.vy = Math.sin(angle) * BAT_SPEED;
+      b.turnTimer = 60 + Math.random() * 90;
+    }
+    b.x += b.vx;
+    b.y += b.vy;
+    // Turn around at the edges of the arena
+    if (b.x < 20 || b.x > canvas.width - 20) b.vx = -b.vx;
+    if (b.y < 120 || b.y > GROUND - 20) b.vy = -b.vy;
+    b.x = Math.max(20, Math.min(canvas.width - 20, b.x));
+    b.y = Math.max(120, Math.min(GROUND - 20, b.y));
+
+    // Latch on to a knight it touches
+    if (b.cooldown > 0) { b.cooldown--; continue; }
+    const box = { x: b.x - 12, y: b.y - 8, width: 24, height: 16 };
+    for (const k of [p1, p2]) {
+      if (overlaps(box, k)) {
+        b.target = k;
+        b.offset = -12 + Math.random() * 24;
+        b.drainTimer = BAT_DRAIN_EVERY;
+        break;
+      }
+    }
+  }
+}
+
+function drawBat(b) {
+  const flap = Math.sin(frame * 0.4 + b.x) * 6;   // wings go up and down
+  ctx.fillStyle = "#2b1d33";
+  ctx.beginPath();
+  ctx.moveTo(b.x - 4, b.y);
+  ctx.lineTo(b.x - 18, b.y - 4 + flap);
+  ctx.lineTo(b.x - 8, b.y + 4);
+  ctx.moveTo(b.x + 4, b.y);
+  ctx.lineTo(b.x + 18, b.y - 4 + flap);
+  ctx.lineTo(b.x + 8, b.y + 4);
+  ctx.fill();
+  ctx.beginPath();
+  ctx.arc(b.x, b.y, 6, 0, Math.PI * 2);
+  ctx.fill();
+  // Red eyes
+  ctx.fillStyle = "#ff3030";
+  ctx.fillRect(b.x - 3, b.y - 2, 2, 2);
+  ctx.fillRect(b.x + 1, b.y - 2, 2, 2);
+}
+
+function updateExplosions() {
+  for (const ex of explosions) ex.timer++;
+  explosions = explosions.filter(ex => ex.timer < 25);
+}
+
+function drawFireball(f) {
+  ctx.fillStyle = "#ff6a00";
+  ctx.beginPath();
+  ctx.arc(f.x, f.y, 10, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "#ffd700";
+  ctx.beginPath();
+  ctx.arc(f.x, f.y, 5, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// An explosion is a growing circle that fades out
+function drawExplosion(ex) {
+  const alpha = 1 - ex.timer / 25;
+  ctx.fillStyle = "rgba(255, 120, 0, " + alpha + ")";
+  ctx.beginPath();
+  ctx.arc(ex.x, ex.y, 10 + ex.timer * 2, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.fillStyle = "rgba(255, 230, 80, " + alpha + ")";
+  ctx.beginPath();
+  ctx.arc(ex.x, ex.y, 5 + ex.timer, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+// Push the knights apart so they can't walk through each other
+function separate(a, b) {
+  // Only when they are at the same height, so you can stand on a platform above someone
+  const sameHeight = a.y - a.height < b.y && b.y - b.height < a.y;
+  if (!sameHeight) return;
+  const overlap = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  if (overlap > 0) {
+    const push = overlap / 2;
+    if (a.x < b.x) { a.x -= push; b.x += push; }
+    else           { a.x += push; b.x -= push; }
+  }
+}
+
+function swordBox(k) {
+  const reach = 45;
+  return {
+    x: k.facing === 1 ? k.x + k.width : k.x - reach,
+    y: k.y - k.height + 20,
+    width: reach,
+    height: 10
+  };
+}
+
+// Rectangle collision. Knights are stored with y at their feet.
+function overlaps(box, k) {
+  return box.x < k.x + k.width && box.x + box.width > k.x &&
+         box.y < k.y && box.y + box.height > k.y - k.height;
+}
+
+function drawKnight(k) {
+  const top = k.y - k.height;
+
+  // Body (armor)
+  ctx.fillStyle = k.color;
+  ctx.fillRect(k.x, top + 20, k.width, k.height - 20);
+
+  // Helmet
+  ctx.fillStyle = "#aaa";
+  ctx.fillRect(k.x + 5, top, k.width - 10, 22);
+  // Visor slit
+  ctx.fillStyle = "#222";
+  const visorX = k.facing === 1 ? k.x + k.width - 18 : k.x + 8;
+  ctx.fillRect(visorX, top + 8, 10, 4);
+
+  // Sword: sticks out while attacking, held up otherwise
+  ctx.fillStyle = "#ddd";
+  if (k.attackTimer > 0) {
+    const s = swordBox(k);
+    ctx.fillRect(s.x, s.y, s.width, 6);
+  } else {
+    const handX = k.facing === 1 ? k.x + k.width - 4 : k.x;
+    ctx.fillRect(handX, top + 5, 4, 35);
+  }
+
+  // Shield while blocking
+  if (k.blocking) {
+    ctx.fillStyle = "#8b5a2b";
+    const shieldX = k.facing === 1 ? k.x + k.width : k.x - 10;
+    ctx.fillRect(shieldX, top + 20, 10, 40);
+  }
+}
+
+function drawHealthBar(k, x, label) {
+  const w = 400;
+  ctx.fillStyle = "#333";
+  ctx.fillRect(x, 20, w, 30);
+  ctx.fillStyle = k.health > 30 ? "#2ecc71" : "#e74c3c";
+  ctx.fillRect(x, 20, w * Math.max(0, k.health) / MAX_HEALTH, 30);
+  ctx.strokeStyle = "#000";
+  ctx.strokeRect(x, 20, w, 30);
+  ctx.fillStyle = "#000";
+  ctx.font = "28px sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText(label, x, 85);
+
+  // Fireball cooldown bar: fills up while recharging
+  const ready = 1 - k.fireCooldown / FIREBALL_COOLDOWN;
+  ctx.fillStyle = "#333";
+  ctx.fillRect(x + 130, 64, 160, 14);
+  ctx.fillStyle = ready === 1 ? "#ff6a00" : "#996633";
+  ctx.fillRect(x + 130, 64, 160 * ready, 14);
+
+  // Stamina bar: yellow, or grey while tired
+  ctx.fillStyle = "#333";
+  ctx.fillRect(x, 95, w, 12);
+  ctx.fillStyle = k.tired ? "#888" : "#f1c40f";
+  ctx.fillRect(x, 95, w * k.stamina / MAX_STAMINA, 12);
+}
+
+function loop() {
+  if (started && !winner) {
+    updateKnight(p1, p2);
+    updateKnight(p2, p1);
+    separate(p1, p2);
+    updateFireballs();
+    updateHearts();
+    updateBats();
+    if (p1.health <= 0) winner = "Player 2";
+    if (p2.health <= 0) winner = "Player 1";
+  }
+  updateExplosions();
+
+  // Draw
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#5a8f3c";
+  ctx.fillRect(0, GROUND, canvas.width, canvas.height - GROUND);
+
+  // Waterfalls with white streaks moving down
+  frame++;
+  for (const w of waterfalls) {
+    ctx.fillStyle = "rgba(40, 120, 220, 0.75)";
+    ctx.fillRect(w.x, w.top, WATERFALL_WIDTH, GROUND - w.top);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
+    for (let y = w.top + (frame * 3) % 40; y < GROUND - 20; y += 40) {
+      ctx.fillRect(w.x + 12, y, 4, 20);
+      ctx.fillRect(w.x + 32, y + 15, 4, 20);
+    }
+  }
+
+  for (const pit of lavaPits) {
+    ctx.fillStyle = "#e8480c";
+    ctx.fillRect(pit.x, GROUND, pit.width, canvas.height - GROUND);
+    ctx.fillStyle = "#ffb000";
+    ctx.fillRect(pit.x, GROUND, pit.width, 5);
+  }
+
+  for (const p of platforms) {
+    ctx.fillStyle = "#8b5a2b";
+    ctx.fillRect(p.x, p.y, p.width, 14);
+    ctx.fillStyle = "#5a8f3c";
+    ctx.fillRect(p.x, p.y, p.width, 4);
+  }
+
+  hearts.forEach(drawHeart);
+  drawKnight(p1);
+  drawKnight(p2);
+  bats.forEach(drawBat);
+  fireballs.forEach(drawFireball);
+  explosions.forEach(drawExplosion);
+  drawHealthBar(p1, 20, "Player 1");
+  drawHealthBar(p2, canvas.width - 420, "Player 2");
+
+  if (winner) {
+    ctx.fillStyle = "rgba(0,0,0,0.6)";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#fff";
+    ctx.font = "96px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText(winner + " wins!", canvas.width / 2, canvas.height / 2);
+    ctx.font = "40px sans-serif";
+    ctx.fillText("Press R to play again", canvas.width / 2, canvas.height / 2 + 80);
+  }
+
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
