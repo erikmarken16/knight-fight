@@ -25,6 +25,8 @@
     .crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
     .crosshair::after { top: 8px; left: 0; height: 2px; width: 18px; }
     .hit { position: absolute; inset: 0; background: rgba(255, 0, 0, 0.35); opacity: 0; transition: opacity 0.3s; }
+    #mouseHint { position: absolute; left: 50%; top: 60%; transform: translateX(-50%); display: flex;
+                 padding: 10px 18px; border-radius: 10px; background: rgba(0, 0, 0, 0.55); font-size: 18px; white-space: nowrap; }
     #divider { position: fixed; top: 0; left: 50%; width: 4px; height: 100%; margin-left: -2px; background: #111; }
     #help { position: fixed; bottom: 8px; width: 100%; text-align: center; font-size: 14px; text-shadow: 1px 1px 2px #000; }
     #message { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
@@ -66,6 +68,7 @@
 <body>
   <div id="hud1" class="hud">
     <div class="hit"></div>
+    <div id="mouseHint">Player 1: click here to play with the mouse</div>
     <div class="name">Player 1</div>
     <div class="bar health"><div></div></div>
     <div class="bar fire"><div></div></div>
@@ -80,8 +83,9 @@
   </div>
   <div id="divider"></div>
   <div id="help">
-    Player 1: W S walk, A D turn, Q jump, Space sword, E fireball &nbsp;|&nbsp;
-    Player 2: ↑ ↓ walk, ← → turn, - jump, Enter sword, Right Shift fireball &nbsp;|&nbsp; R restart, Esc menu
+    Player 1: W A S D move, mouse look, left click sword, right click or E fireball, Space jump &nbsp;|&nbsp;
+    Player 2: ↑ ↓ walk, ← → turn, - jump, Enter sword, Right Shift fireball &nbsp;|&nbsp;
+    Hold jump in a waterfall to swim up &nbsp;|&nbsp; R restart, Esc menu
   </div>
   <div id="message"><h1></h1><p>Press R (or ↻) to play again, Esc (or ☰) for the menu</p></div>
   <div id="touch"></div>
@@ -113,21 +117,56 @@ const HEART_HEAL = 15;
 const HEART_EVERY = 10;       // seconds
 const MAX_HEARTS = 4;
 
-// Keys: the same attack and fireball keys as in the 2D game
+// Player 1 plays like most computer games: WASD to move, the mouse to look, left click for the sword,
+// right click (or E) for a fireball, Space to jump. "Mouse0"/"Mouse2" are the left and right mouse buttons.
+// Player 2 uses the arrow keys. On a phone the touch buttons press these same "keys".
 const CONTROLS = [
-  { forward: "KeyW", back: "KeyS", left: "KeyA", right: "KeyD", jump: "KeyQ", attack: "Space", fire: "KeyE" },
+  { forward: "KeyW", back: "KeyS", left: "KeyA", right: "KeyD", jump: "Space", attack: "Mouse0", fire: "KeyE", fire2: "Mouse2" },
   { forward: "ArrowUp", back: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", jump: "Slash", attack: "Enter", fire: "ShiftRight" }
 ];
+const MOUSE_SPEED = 0.0025;
 
 const keys = {};
 addEventListener("keydown", e => {
   keys[e.code] = true;
   if (e.code === "KeyR") restart();
-  if (e.code === "Escape") location.href = "index.html";
+  // Esc first lets go of the mouse; only go to the menu if the mouse wasn't just let go
+  if (e.code === "Escape" && !document.pointerLockElement && performance.now() - mouseReleasedAt > 500) location.href = "index.html";
   // Stop space, arrows and "/" from scrolling the page or opening quick find
   if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Slash", "Enter"].includes(e.code)) e.preventDefault();
 });
 addEventListener("keyup", e => { keys[e.code] = false; });
+
+// ---------- Mouse for player 1 ----------
+// Clicking the game "locks" the mouse to it: the pointer disappears and moving the mouse turns and looks around.
+let mouseReleasedAt = 0;
+
+function mouseLocked() {
+  return document.pointerLockElement === renderer.domElement;
+}
+
+addEventListener("mousedown", e => {
+  if (!mouseLocked()) {
+    if (!isPhone) renderer.domElement.requestPointerLock();
+    return;   // the click that grabs the mouse doesn't swing the sword
+  }
+  keys["Mouse" + e.button] = true;
+});
+addEventListener("mouseup", e => { keys["Mouse" + e.button] = false; });
+addEventListener("contextmenu", e => e.preventDefault());   // right click is the fireball, not a menu
+addEventListener("mousemove", e => {
+  if (!mouseLocked()) return;
+  const p = players[0];
+  p.yaw -= e.movementX * MOUSE_SPEED;
+  p.pitch = Math.max(-1.2, Math.min(1.2, p.pitch - e.movementY * MOUSE_SPEED));
+});
+document.addEventListener("pointerlockchange", () => {
+  if (!mouseLocked()) {
+    mouseReleasedAt = performance.now();
+    keys.Mouse0 = keys.Mouse2 = false;
+  }
+  document.getElementById("mouseHint").style.display = mouseLocked() || isPhone ? "none" : "flex";
+});
 
 // ---------- Touch buttons for phones ----------
 // Holding a button is the same as holding down its key, so the game code doesn't need to know about touch.
@@ -371,16 +410,44 @@ for (const pool of lavaPools) {
   lavaLights.push(light);
 }
 
-// A waterfall pouring down the far wall into a pool
-const waterfall = new THREE.Mesh(new THREE.PlaneGeometry(4, 5),
-  new THREE.MeshStandardMaterial({ map: waterTexture, transparent: true, opacity: 0.85, roughness: 0.2 }));
-waterfall.position.set(0, 2.5, -ARENA + 0.05);
-scene.add(waterfall);
-const pool = new THREE.Mesh(new THREE.CircleGeometry(3, 32),
-  new THREE.MeshStandardMaterial({ color: "#2f7fd0", roughness: 0.1, metalness: 0.2 }));
-pool.rotation.x = -Math.PI / 2;
-pool.position.set(0, 0.03, -ARENA + 1.5);
-scene.add(pool);
+// Waterfalls pour down the walls at both ends. Stand in one and hold jump to swim up,
+// then step sideways onto one of the high ledges next to it. The ledges are too high to jump to.
+const SWIM_SPEED = 3;
+const SINK_SPEED = 1.5;
+const WATERFALL_TOP = 5.2;   // a little above the ledges, so you can climb out
+const LEDGE_HEIGHT = 4.5;
+const waterfalls = [
+  { x: 0, z: -ARENA + 0.6, width: 3 },
+  { x: 0, z: ARENA - 0.6, width: 3 }
+];
+const waterMaterial = new THREE.MeshStandardMaterial({ map: waterTexture, transparent: true, opacity: 0.85, roughness: 0.2,
+                                                       side: THREE.DoubleSide, depthWrite: false });
+const poolMaterial = new THREE.MeshStandardMaterial({ color: "#2f7fd0", roughness: 0.1, metalness: 0.2 });
+for (const w of waterfalls) {
+  const toWall = Math.sign(w.z);
+  // A curtain of water against the wall, and a thinner one in front so it looks thick
+  for (const offset of [0.55, 0]) {
+    const water = new THREE.Mesh(new THREE.PlaneGeometry(w.width, WATERFALL_TOP), waterMaterial);
+    water.position.set(w.x, WATERFALL_TOP / 2, w.z + toWall * offset);
+    scene.add(water);
+  }
+  const pool = new THREE.Mesh(new THREE.CircleGeometry(2.6, 32), poolMaterial);
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.set(w.x, 0.03, w.z - toWall * 0.8);
+  scene.add(pool);
+  // High stone ledges on both sides of the waterfall
+  for (const side of [-1, 1]) {
+    const ledge = { x: w.x + side * (w.width / 2 + 2), z: w.z - toWall * 0.9, w: 4, d: 3, h: LEDGE_HEIGHT };
+    platforms.push(ledge);
+    addBox(ledge.x, ledge.h / 2, ledge.z, ledge.w, ledge.h, ledge.d, stoneMaterial(1, 1.2));
+    addBox(ledge.x, ledge.h + 0.03, ledge.z, ledge.w, 0.06, ledge.d,
+           new THREE.MeshStandardMaterial({ map: grassTexture, roughness: 0.95 })).castShadow = false;
+  }
+}
+
+function inWaterfall(p) {
+  return waterfalls.some(w => Math.abs(p.x - w.x) < w.width / 2 && Math.abs(p.z - w.z) < 1.2 && p.y < WATERFALL_TOP);
+}
 
 // ---------- Decorations ----------
 // Pine trees outside the walls, peeking over the top
@@ -463,6 +530,7 @@ for (let i = -12; i <= 12; i += 8) {
 const flames = [];
 const flameMaterial = new THREE.MeshBasicMaterial({ color: "#ffb030" });
 for (let i = -16; i <= 16; i += 8) {
+  if (i === 0) continue;   // that's where the waterfalls are
   for (const [x, z, rotY] of [[i, -ARENA + 0.15, 0], [i, ARENA - 0.15, Math.PI]]) {
     const torch = new THREE.Group();
     const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.04, 0.6, 6), trunkMaterial);
@@ -609,6 +677,7 @@ try {
   if (saved) players[0].name = saved;
 } catch (e) {}
 players.forEach(p => { p.hud.querySelector(".name").textContent = p.name; });
+document.getElementById("mouseHint").style.display = isPhone ? "none" : "flex";
 
 // ---------- Hearts, fireballs and explosions ----------
 let hearts = [];
@@ -672,6 +741,7 @@ function restart() {
     Object.assign(p, {
       x: 0, y: 0, z: i === 0 ? 15 : -15, vy: 0,
       yaw: i === 0 ? 0 : Math.PI,   // face each other
+      pitch: 0,                     // looking up or down (only with the mouse)
       health: MAX_HEALTH, onGround: true,
       swing: 0, swingCooldown: 0, fireCooldown: 0, walk: 0, hurt: 0
     });
@@ -714,21 +784,34 @@ function hurt(p, damage, fromX, fromZ) {
 
 function updatePlayer(p, other, dt) {
   const c = p.controls;
-  if (keys[c.left]) p.yaw += TURN_SPEED * dt;
-  if (keys[c.right]) p.yaw -= TURN_SPEED * dt;
   const dir = forwardOf(p);
+  // With the mouse, A and D step sideways (the mouse turns). Without it, A/D and ←/→ turn.
+  const strafe = p === players[0] && mouseLocked();
+  let side = 0;
+  if (strafe) {
+    if (keys[c.left]) side -= 1;
+    if (keys[c.right]) side += 1;
+  } else {
+    if (keys[c.left]) p.yaw += TURN_SPEED * dt;
+    if (keys[c.right]) p.yaw -= TURN_SPEED * dt;
+  }
   let move = 0;
   if (keys[c.forward]) move += 1;
   if (keys[c.back]) move -= 0.6;
-  if (move) {
-    tryMove(p, dir.x * move * WALK_SPEED * dt, dir.z * move * WALK_SPEED * dt);
+  if (move || side) {
+    // dir.z, -dir.x points to the right of where you look
+    const dx = dir.x * move + -dir.z * side * 0.8;
+    const dz = dir.z * move + dir.x * side * 0.8;
+    tryMove(p, dx * WALK_SPEED * dt, dz * WALK_SPEED * dt);
     p.walk += dt * 10;
   }
 
-  // Jumping and falling, landing on the ground or on top of platforms
+  // Jumping and falling, landing on the ground or on top of platforms.
+  // In a waterfall you swim instead: hold jump to swim up, let go to sink slowly.
   if (keys[c.jump] && p.onGround) { p.vy = JUMP_SPEED; p.onGround = false; }
   const prevY = p.y;
-  p.vy -= GRAVITY * dt;
+  if (inWaterfall(p)) p.vy = keys[c.jump] ? SWIM_SPEED : -SINK_SPEED;
+  else p.vy -= GRAVITY * dt;
   p.y += p.vy * dt;
   p.onGround = false;
   const under = platformAt(p.x, p.z, 0.3);
@@ -758,7 +841,7 @@ function updatePlayer(p, other, dt) {
 
   // Fireball, with a cooldown so you can't spam it
   p.fireCooldown = Math.max(0, p.fireCooldown - dt);
-  if (keys[c.fire] && p.fireCooldown === 0) {
+  if ((keys[c.fire] || keys[c.fire2]) && p.fireCooldown === 0) {
     shootFireball(p);
     p.fireCooldown = FIREBALL_COOLDOWN;
   }
@@ -861,7 +944,7 @@ function placePlayer(p) {
   cape.rotation.x = 0.12 + Math.abs(step) * 0.3;   // the cape flaps when walking
   swordArm.rotation.x = p.swing > 0 ? -1.6 * (p.swing / 0.3) : -0.3;
   p.camera.position.set(p.x, p.y + 1.7, p.z);
-  p.camera.rotation.set(0, p.yaw, 0);
+  p.camera.rotation.set(p.pitch, p.yaw, 0, "YXZ");   // turn first, then look up or down
   // The sword in your own view swings down when you attack
   p.viewSword.rotation.x = p.swing > 0 ? 0.35 - 1.4 * Math.sin((p.swing / 0.3) * Math.PI) : 0.35 + Math.sin(p.walk) * 0.03;
   // HUD
