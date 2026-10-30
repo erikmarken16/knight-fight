@@ -98,7 +98,7 @@
       <button id="logIn">2 - Log in</button>
       <p id="loginNote" class="note"></p>
       <!-- Change the number with every upload, so you can see if a phone has the newest version -->
-      <p class="version">Version 10</p>
+      <p class="version">Version 11</p>
     </div>
     <!-- Log in: just a username -->
     <div id="loginForm" class="menu" style="display: none">
@@ -116,7 +116,7 @@
       <button id="toLoginMenu">3 - Go to the login menu</button>
       <button id="friends">4 - Friends</button>
       <p id="menuNote" class="note"></p>
-      <p class="version">Version 10</p>
+      <p class="version">Version 11</p>
     </div>
     <!-- Online: one player creates a game and gets a code, the other joins with it -->
     <div id="onlineMenu" class="menu" style="display: none">
@@ -636,14 +636,32 @@ function createGame() {
     onlineNote.textContent = "Your code is " + code + ". Give it to your friend and wait here.";
   });
   peer.on("connection", c => {
-    if (conn) { c.close(); return; }  // only one friend at a time
+    if (conn && conn.open) { c.close(); return; }  // only one friend at a time
+    if (conn) conn.close();  // an earlier try that never got through: let the new one in
     useConnection(c, "host");
   });
+  // Phones pause the page when you switch app (for example to send the code), which drops the
+  // connection to the matchmaking server. Then the friend can't find us, so we connect again.
+  peer.on("disconnected", () => reconnectHost());
   peer.on("error", err => {
     if (err.type === "unavailable-id") createGame();  // the code was taken, try another
+    else if (err.type === "network" || err.type === "server-error" || err.type === "socket-error") reconnectHost();
     else onlineNote.textContent = "Something went wrong: " + err.type;
   });
 }
+
+function reconnectHost() {
+  if (!peer || peer.destroyed || !peer.disconnected || onlineRole) return;
+  try { peer.reconnect(); } catch (e) {}
+}
+
+// Coming back to the game after switching app: make sure the friend can find us again
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) setTimeout(reconnectHost, 500);
+});
+
+const JOIN_TRIES = 3;
+const JOIN_WAIT = 12000;   // milliseconds to wait for each try
 
 function joinGame() {
   if (!onlineAvailable()) return;
@@ -655,17 +673,44 @@ function joinGame() {
   fullscreenOnPhone();
   leaveOnline();
   onlineNote.textContent = "Joining " + code + "...";
-  peer = new Peer();
-  peer.on("open", () => useConnection(peer.connect(PEER_PREFIX + code, { reliable: true }), "guest"));
-  peer.on("error", err => {
+  const myPeer = new Peer();
+  peer = myPeer;
+  myPeer.on("open", () => tryToJoin(myPeer, code, 1));
+  myPeer.on("error", err => {
+    if (peer !== myPeer) return;  // an old try we already gave up on
     onlineNote.textContent = err.type === "peer-unavailable"
-      ? "No game with the code " + code + ". Check the code with your friend."
-      : "Something went wrong: " + err.type;
+      ? "No game with the code " + code + ". Check the code, and that your friend still has the game open."
+      : "Something went wrong: " + err.type + ". Try again.";
   });
+}
+
+// Try to reach the friend. If nothing happens for a while, try again a couple of times.
+function tryToJoin(myPeer, code, attempt) {
+  if (peer !== myPeer) return;  // gave up or started over
+  const c = myPeer.connect(PEER_PREFIX + code, { reliable: true });
+  useConnection(c, "guest");
+  setTimeout(() => {
+    if (peer !== myPeer || onlineRole || conn !== c) return;  // joined, or gave up
+    c.close();
+    conn = null;
+    if (attempt < JOIN_TRIES) {
+      onlineNote.textContent = "Still trying to join " + code + " (try " + (attempt + 1) + " of " + JOIN_TRIES + ")...";
+      tryToJoin(myPeer, code, attempt + 1);
+    } else {
+      onlineNote.textContent = "Couldn't reach " + code + ". Your friend should keep the game open on the screen " +
+                               "with the code. If it still doesn't work, try both being on the same wifi.";
+    }
+  }, JOIN_WAIT);
 }
 
 function useConnection(c, role) {
   conn = c;
+  // "failed" means the two internet connections couldn't reach each other at all
+  c.on("iceStateChanged", state => {
+    if (state === "failed" && !onlineRole) {
+      onlineNote.textContent = "Your internet connections can't reach each other. Try both being on the same wifi.";
+    }
+  });
   c.on("open", () => {
     onlineRole = role;
     playerNames = {};
@@ -729,10 +774,12 @@ function applyState(s) {
 
 function leaveOnline() {
   onlineRole = null;   // set first, so closing below doesn't count as the friend leaving
-  if (conn) conn.close();
-  if (peer) peer.destroy();
-  conn = null;
+  const oldConn = conn;
+  const oldPeer = peer;
+  conn = null;         // and these too, so closing doesn't trigger a reconnect or a new try
   peer = null;
+  if (oldConn) oldConn.close();
+  if (oldPeer) oldPeer.destroy();
   remoteInput = {};
   playerNames = {};
 }
