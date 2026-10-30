@@ -28,6 +28,17 @@
     .hit { position: absolute; inset: 0; opacity: 0; transition: opacity 0.3s;
            background: radial-gradient(ellipse at center, rgba(160, 0, 0, 0) 45%, rgba(160, 0, 0, 0.65) 100%); }
     .ammo { position: absolute; right: 20px; bottom: 40px; font-size: 26px; font-weight: bold; text-shadow: 2px 2px 3px #000; }
+    /* Looking through the scope: black around a round lens, thin cross lines and a red dot */
+    .name, .bar, .ammo, .headshot { z-index: 2; }   /* stay visible on top of the scope */
+    .scope { position: absolute; inset: 0; opacity: 0; pointer-events: none; z-index: 1;
+             background: radial-gradient(circle closest-side, rgba(0, 0, 0, 0) 88%, rgba(0, 0, 0, 0.6) 92%, #000 95%); }
+    .reticle { position: absolute; left: 50%; top: 50%; width: 70vmin; height: 70vmin; transform: translate(-50%, -50%); }
+    .reticle::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1.5px; margin-left: -0.75px;
+                       background: linear-gradient(#000 0 42%, transparent 42% 58%, #000 58%); }
+    .reticle::after { content: ""; position: absolute; top: 50%; left: 0; right: 0; height: 1.5px; margin-top: -0.75px;
+                      background: linear-gradient(90deg, #000 0 42%, transparent 42% 58%, #000 58%); }
+    .scope::after { content: ""; position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px; border-radius: 50%;
+                    background: #ff2a2a; box-shadow: 0 0 6px 2px rgba(255, 40, 40, 0.8); }
     .headshot { position: absolute; top: 38%; width: 100%; text-align: center; font-size: 30px; font-weight: bold;
                 color: #ff4a3a; text-shadow: 2px 2px 3px #000; opacity: 0; transition: opacity 0.2s; }
     #mouseHint { position: absolute; left: 50%; top: 60%; transform: translateX(-50%); display: flex;
@@ -47,6 +58,7 @@
     .pad.p2 { right: 10px; flex-direction: row-reverse; }
     .dpad { display: grid; grid-template-columns: repeat(3, 50px); grid-template-rows: repeat(2, 50px); gap: 4px; }
     .acts { display: grid; grid-template-columns: repeat(2, 50px); gap: 4px; }
+    .acts.three { grid-template-columns: repeat(3, 50px); }
     .tb { width: 50px; height: 50px; padding: 0; border-radius: 50%; font-size: 20px; color: #fff;
           background: rgba(0, 0, 0, 0.35); border: 2px solid rgba(255, 255, 255, 0.7);
           touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
@@ -83,6 +95,7 @@
     <div class="crosshair"></div>
     <div class="ammo"></div>
     <div class="headshot">HEADSHOT!</div>
+    <div class="scope"><div class="reticle"></div></div>
   </div>
   <div id="hud2" class="hud">
     <div class="hit"></div>
@@ -92,6 +105,7 @@
     <div class="crosshair"></div>
     <div class="ammo"></div>
     <div class="headshot">HEADSHOT!</div>
+    <div class="scope"><div class="reticle"></div></div>
   </div>
   <div id="divider"></div>
   <div id="help"></div>
@@ -140,8 +154,10 @@ const LEDGE_HEIGHT = 4.5;     // too high to jump to: swim up a waterfall
 // right click (or E) for a fireball, Space to jump. "Mouse0"/"Mouse2" are the left and right mouse buttons.
 // Player 2 uses the arrow keys. On a phone the touch buttons press these same "keys".
 const CONTROLS = [
-  { forward: "KeyW", back: "KeyS", left: "KeyA", right: "KeyD", jump: "Space", attack: "Mouse0", fire: "KeyE", fire2: "Mouse2" },
-  { forward: "ArrowUp", back: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", jump: "Slash", attack: "Enter", fire: "ShiftRight" }
+  { forward: "KeyW", back: "KeyS", left: "KeyA", right: "KeyD", jump: "Space", attack: "Mouse0", fire: "KeyE", fire2: "Mouse2",
+    aim: "Mouse2", crouch: "KeyC" },
+  { forward: "ArrowUp", back: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", jump: "Slash", attack: "Enter", fire: "ShiftRight",
+    aim: "Period", crouch: "Comma" }
 ];
 const MOUSE_SPEED = 0.0025;
 
@@ -164,6 +180,9 @@ const GRENADE_FUSE = 1.8;          // seconds until it goes off
 const GRENADE_RADIUS = 4.5;
 const GRENADE_DAMAGE = 55;         // right next to it; less further away
 const MEDKIT_HEAL = 25;
+const AIM_FOV = 28;          // zoomed in view through the scope (normal is 70)
+// In the modern mode the right mouse button aims through the scope, so player 1 throws grenades with E or G instead
+if (!CASTLE) CONTROLS[0].fire2 = "KeyG";
 
 const keys = {};
 addEventListener("keydown", e => {
@@ -196,8 +215,9 @@ addEventListener("contextmenu", e => e.preventDefault());   // right click is th
 addEventListener("mousemove", e => {
   if (!mouseLocked()) return;
   const p = players[0];
-  p.yaw -= e.movementX * MOUSE_SPEED;
-  p.pitch = Math.max(-1.2, Math.min(1.2, p.pitch - e.movementY * MOUSE_SPEED));
+  const speed = MOUSE_SPEED * (1 - 0.6 * (p.aim || 0));   // slower while looking through the scope
+  p.yaw -= e.movementX * speed;
+  p.pitch = Math.max(-1.2, Math.min(1.2, p.pitch - e.movementY * speed));
 });
 document.addEventListener("pointerlockchange", () => {
   if (!mouseLocked()) {
@@ -235,7 +255,14 @@ function makePad(c, which) {
               holdKey("◀", c.left), holdKey("▼", c.back), holdKey("▶", c.right));
   const acts = document.createElement("div");
   acts.className = "acts";
-  acts.append(holdKey(CASTLE ? "🔥" : "💣", c.fire), document.createElement("span"), holdKey("⤒", c.jump), holdKey(CASTLE ? "⚔" : "🎯", c.attack));
+  if (CASTLE) {
+    acts.append(holdKey("🔥", c.fire), document.createElement("span"), holdKey("⤒", c.jump), holdKey("⚔", c.attack));
+  } else {
+    // Modern: scope, grenade and crouch on top; jump and shoot below
+    acts.classList.add("three");
+    acts.append(holdKey("🔭", c.aim), holdKey("💣", c.fire), holdKey("⬇", c.crouch),
+                document.createElement("span"), holdKey("⤒", c.jump), holdKey("🎯", c.attack));
+  }
   pad.append(dpad, acts);
   return pad;
 }
@@ -1809,10 +1836,10 @@ document.getElementById("help").innerHTML = CASTLE
   ? "Player 1: W A S D move, mouse look, left click sword, right click or E fireball, Space jump &nbsp;|&nbsp; " +
     "Player 2: ↑ ↓ walk, ← → turn, - jump, Enter sword, Right Shift fireball &nbsp;|&nbsp; " +
     "Hold jump in a waterfall to swim up &nbsp;|&nbsp; R restart, Esc menu"
-  : "Player 1: W A S D move, mouse aim, left click shoot (hold), right click or E grenade, Space jump &nbsp;|&nbsp; " +
-    "Player 2: ↑ ↓ walk, ← → turn, - jump, Enter shoot (hold), Right Shift grenade &nbsp;|&nbsp; " +
+  : "Player 1: W A S D move, mouse look, left click shoot, right click scope, C crouch, E or G grenade, Space jump &nbsp;|&nbsp; " +
+    "Player 2: ↑ ↓ walk, ← → turn, Enter shoot, . scope, , crouch, Right Shift grenade, - jump &nbsp;|&nbsp; " +
     "Aim for the head! &nbsp;|&nbsp; R restart, Esc menu";
-if (CASTLE) document.querySelectorAll(".ammo, .headshot").forEach(e => e.remove());
+if (CASTLE) document.querySelectorAll(".ammo, .headshot, .scope").forEach(e => e.remove());
 
 // ---------- Hearts, fireballs and explosions ----------
 let hearts = [];
@@ -1911,13 +1938,18 @@ const hitVector = new THREE.Vector3();
 const tracerGeometry = new THREE.BoxGeometry(1, 1, 1);
 const tracerMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(6, 4.5, 2), toneMapped: false, transparent: true });
 
+// Eyes are lower when crouching
+function eyeHeight(p) {
+  return 1.6 - 0.55 * (p.crouch || 0);
+}
+
 // Players with the mouse aim exactly. Everyone else (arrow keys, touch) gets help aiming up or down
 // at the other soldier when they are roughly in front.
 function aimPitch(p, other) {
   if (p === players[0] && mouseLocked()) return p.pitch;
   const dx = other.x - p.x, dz = other.z - p.z, dist = Math.hypot(dx, dz);
   const dir = forwardOf(p);
-  if (!other.dead && (dx * dir.x + dz * dir.z) / (dist || 1) > 0.97) return Math.atan2(other.y + 1.15 - (p.y + 1.6), dist);
+  if (!other.dead && (dx * dir.x + dz * dir.z) / (dist || 1) > 0.97) return Math.atan2(other.y + 1.15 - 0.45 * other.crouch - (p.y + eyeHeight(p)), dist);
   return p.pitch;
 }
 
@@ -1954,24 +1986,24 @@ function shoot(p, other) {
   p.recoil = 1;
   p.flash = 0.05;
   const moving = keys[p.controls.forward] || keys[p.controls.back];
-  const spread = moving ? 0.03 : 0.01;
+  const spread = (moving ? 0.03 : 0.01) * (1 - 0.85 * p.aim) * (1 - 0.3 * p.crouch);
   const pitch = aimPitch(p, other) + (Math.random() - 0.5) * spread;
   const yaw = p.yaw + (Math.random() - 0.5) * spread;
-  const origin = new THREE.Vector3(p.x, p.y + 1.6, p.z);
+  const origin = new THREE.Vector3(p.x, p.y + eyeHeight(p), p.z);
   const direction = new THREE.Vector3(-Math.sin(yaw) * Math.cos(pitch), Math.sin(pitch), -Math.cos(yaw) * Math.cos(pitch));
   let distance = rayDistance(origin, direction, 80);
   let hit = null;
   if (!other.dead) {
     ray.set(origin, direction);
     // Head first: a small ball on top. Then the body: a box from the knees to the shoulders.
-    headSphere.center.set(other.x, other.y + 1.68, other.z);
+    headSphere.center.set(other.x, other.y + 1.68 - 0.55 * other.crouch, other.z);
     headSphere.radius = 0.19;
     if (ray.intersectSphere(headSphere, hitVector) && hitVector.distanceTo(origin) < distance) {
       distance = hitVector.distanceTo(origin);
       hit = "head";
     }
     box3.min.set(other.x - 0.3, other.y + 0.05, other.z - 0.3);
-    box3.max.set(other.x + 0.3, other.y + 1.48, other.z + 0.3);
+    box3.max.set(other.x + 0.3, other.y + 1.48 - 0.5 * other.crouch, other.z + 0.3);
     if (ray.intersectBox(box3, hitVector) && hitVector.distanceTo(origin) < distance) {
       distance = hitVector.distanceTo(origin);
       hit = "body";
@@ -2055,7 +2087,8 @@ function restart() {
       kx: 0, kz: 0,                 // knockback speed
       health: MAX_HEALTH, onGround: true, dead: false, deadTime: 0,
       swing: 0, swingCooldown: 0, fireCooldown: 0, walk: 0, hurt: 0, shake: 0,
-      ammo: RIFLE_AMMO, reload: 0, fireTimer: 0, recoil: 0, flash: 0, headshot: 0
+      ammo: RIFLE_AMMO, reload: 0, fireTimer: 0, recoil: 0, flash: 0, headshot: 0,
+      crouch: 0, aim: 0             // 0 = standing / not aiming, 1 = fully crouched / looking through the scope
     });
     p.model.rotation.set(0, 0, 0);
   });
@@ -2119,6 +2152,14 @@ function updatePlayer(p, other, dt) {
   p.shake = Math.max(0, p.shake - dt);
   if (p.dead) { p.deadTime += dt; return; }
   const dir = forwardOf(p);
+  if (!CASTLE) {
+    // Crouching and aiming happen smoothly over a fraction of a second. You cannot aim while reloading.
+    const toward = (value, target, speed) => value < target ? Math.min(target, value + speed * dt) : Math.max(target, value - speed * dt);
+    p.crouch = toward(p.crouch, keys[c.crouch] && p.onGround ? 1 : 0, 7);
+    p.aim = toward(p.aim, keys[c.aim] && p.reload <= 0 ? 1 : 0, 7);
+  }
+  // Crouching and aiming make you walk slower
+  const slow = (1 - 0.55 * p.crouch) * (1 - 0.45 * p.aim);
   // With the mouse, A and D step sideways (the mouse turns). Without it, A/D and ←/→ turn.
   const strafe = p === players[0] && mouseLocked();
   let side = 0;
@@ -2136,7 +2177,7 @@ function updatePlayer(p, other, dt) {
     // (-dir.z, dir.x) points to the right of where you look
     const dx = dir.x * move - dir.z * side * 0.8;
     const dz = dir.z * move + dir.x * side * 0.8;
-    tryMove(p, dx * WALK_SPEED * dt, dz * WALK_SPEED * dt);
+    tryMove(p, dx * WALK_SPEED * slow * dt, dz * WALK_SPEED * slow * dt);
     p.walk += dt * 9;
   }
 
@@ -2151,7 +2192,7 @@ function updatePlayer(p, other, dt) {
 
   // Jumping and falling, landing on the ground or on top of platforms.
   // In a waterfall you swim instead: hold jump to swim up, let go to sink slowly.
-  if (keys[c.jump] && p.onGround) { p.vy = JUMP_SPEED; p.onGround = false; }
+  if (keys[c.jump] && p.onGround && p.crouch < 0.5) { p.vy = JUMP_SPEED; p.onGround = false; }
   const prevY = p.y;
   if (inWaterfall(p)) p.vy = keys[c.jump] ? SWIM_SPEED : -SINK_SPEED;
   else p.vy -= GRAVITY * dt;
@@ -2412,7 +2453,7 @@ function updateWorld(dt, time) {
 // Soldier animation: legs walk, the upper body leans with where you look, the rifle kicks back
 function animateSoldier(p, time) {
   const { upper, rifle, flash } = p.model.userData;
-  upper.rotation.x = p.pitch * 0.5;
+  upper.rotation.x = p.pitch * 0.5 - p.crouch * 0.15;   // lean forward a little when crouching
   upper.position.y = 0.92 + Math.abs(Math.sin(p.walk)) * 0.02 + Math.sin(time * 1.5) * 0.005;   // breathing
   rifle.position.z = -0.22 + p.recoil * 0.05;
   rifle.rotation.x = p.reload > 0 ? -0.6 : 0;   // tipped down while reloading
@@ -2421,8 +2462,13 @@ function animateSoldier(p, time) {
   // First-person rifle: kicks back when firing, dips while reloading, sways when walking
   const view = p.viewSword;
   const reloadDip = p.reload > 0 ? Math.sin(Math.min(1, (RELOAD_TIME - p.reload) / RELOAD_TIME) * Math.PI) : 0;
-  view.position.set(0.12, -0.13 - reloadDip * 0.1 + Math.sin(p.walk * 2) * 0.003, -0.3 + p.recoil * 0.03);
-  view.rotation.set(p.recoil * 0.06 - reloadDip * 0.5, 0, reloadDip * 0.4);
+  // Aiming brings the rifle up to the middle of your view; when it is all the way up you look through the scope
+  view.position.set(0.12 * (1 - p.aim), -0.13 + 0.06 * p.aim - reloadDip * 0.1 + Math.sin(p.walk * 2) * 0.003 * (1 - p.aim),
+                    -0.3 + p.recoil * 0.03);
+  view.rotation.set(p.recoil * 0.06 * (1 - 0.7 * p.aim) - reloadDip * 0.5, 0, reloadDip * 0.4);
+  view.visible = !p.dead && p.aim < 0.9;
+  p.hud.querySelector(".scope").style.opacity = Math.max(0, (p.aim - 0.6) / 0.4);
+  p.hud.querySelector(".crosshair").style.opacity = p.aim > 0.3 ? 0 : 1;
   view.userData.flash.visible = p.flash > 0;
   view.userData.flash.material.rotation = Math.random() * Math.PI;
   view.userData.flashLight.intensity = p.flash > 0 ? 8 : 0;
@@ -2452,6 +2498,14 @@ function placePlayer(p, time) {
   legR.hip.rotation.x = -step * 0.6;
   legL.knee.rotation.x = -Math.max(0, -step) * 0.9;
   legR.knee.rotation.x = -Math.max(0, step) * 0.9;
+  if (!CASTLE && p.crouch > 0) {
+    // Crouching: drop the body and fold the legs (thighs forward, shins back)
+    m.position.y = p.y - 0.45 * p.crouch;
+    for (const leg of [legL, legR]) {
+      leg.hip.rotation.x += (1.2 - leg.hip.rotation.x) * p.crouch;
+      leg.knee.rotation.x += (-1.9 - leg.knee.rotation.x) * p.crouch;
+    }
+  }
   placeCamera(p);
   if (!CASTLE) { animateSoldier(p, time); return; }
   head.position.y = 1.66 + Math.abs(step) * 0.015;
@@ -2486,8 +2540,14 @@ function placeCamera(p) {
     p.camera.position.set(p.x, p.y + 1.7 - fall * 1.4, p.z);
     p.camera.rotation.set(-fall * 0.6, p.yaw, fall * 0.9, "YXZ");
   } else {
-    p.camera.position.set(p.x + (Math.random() - 0.5) * shake, p.y + 1.7 + (Math.random() - 0.5) * shake, p.z + (Math.random() - 0.5) * shake);
+    p.camera.position.set(p.x + (Math.random() - 0.5) * shake, p.y + 1.7 - 0.55 * (p.crouch || 0) + (Math.random() - 0.5) * shake,
+                          p.z + (Math.random() - 0.5) * shake);
     p.camera.rotation.set(p.pitch, p.yaw, 0, "YXZ");   // turn first, then look up or down
+  }
+  const fov = 70 - (70 - AIM_FOV) * (p.dead ? 0 : p.aim || 0);
+  if (p.camera.fov !== fov) {
+    p.camera.fov = fov;
+    p.camera.updateProjectionMatrix();
   }
   p.viewSword.visible = !p.dead;
 }
