@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <title>Knight Fight 3D</title>
+  <style>
+    body { margin: 0; overflow: hidden; background: #111; color: #fff; font-family: sans-serif; }
+    canvas { display: block; }
+    /* Each player's half of the screen gets its own health bars and crosshair */
+    .hud { position: fixed; top: 0; width: 50%; height: 100%; pointer-events: none; }
+    #hud1 { left: 0; }
+    #hud2 { right: 0; }
+    .name { position: absolute; top: 14px; left: 16px; font-size: 22px; font-weight: bold; text-shadow: 2px 2px 3px #000; }
+    .bar { position: absolute; left: 16px; width: 260px; border-radius: 10px; background: rgba(0, 0, 0, 0.5); overflow: hidden; }
+    .bar div { height: 100%; border-radius: 10px; }
+    .health { top: 46px; height: 20px; }
+    .health div { background: linear-gradient(#5ef08a, #1e9e4f); }
+    .fire { top: 72px; height: 8px; width: 160px; }
+    .fire div { background: linear-gradient(#ffcf4a, #ff6a00); }
+    .crosshair { position: absolute; top: 50%; left: 50%; width: 18px; height: 18px; margin: -9px; }
+    .crosshair::before, .crosshair::after { content: ""; position: absolute; background: rgba(255, 255, 255, 0.8); }
+    .crosshair::before { left: 8px; top: 0; width: 2px; height: 18px; }
+    .crosshair::after { top: 8px; left: 0; height: 2px; width: 18px; }
+    .hit { position: absolute; inset: 0; background: rgba(255, 0, 0, 0.35); opacity: 0; transition: opacity 0.3s; }
+    #divider { position: fixed; top: 0; left: 50%; width: 4px; height: 100%; margin-left: -2px; background: #111; }
+    #help { position: fixed; bottom: 8px; width: 100%; text-align: center; font-size: 14px; text-shadow: 1px 1px 2px #000; }
+    #message { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
+               background: rgba(0, 0, 0, 0.6); text-align: center; }
+    #message h1 { font-size: 64px; margin: 0; color: #ffd84d; text-shadow: 3px 3px 4px #000; }
+    #message p { font-size: 22px; }
+    /* Touch buttons for phones: each player's buttons are on their own half of the screen */
+    html { touch-action: manipulation; }
+    #touch { display: none; }
+    .pad { position: fixed; bottom: 10px; display: flex; gap: 8px; align-items: flex-end; }
+    .pad.p1 { left: 10px; }
+    .pad.p2 { right: 10px; flex-direction: row-reverse; }
+    .dpad { display: grid; grid-template-columns: repeat(3, 50px); grid-template-rows: repeat(2, 50px); gap: 4px; }
+    .acts { display: grid; grid-template-columns: repeat(2, 50px); gap: 4px; }
+    .tb { width: 50px; height: 50px; padding: 0; border-radius: 50%; font-size: 20px; color: #fff;
+          background: rgba(0, 0, 0, 0.35); border: 2px solid rgba(255, 255, 255, 0.7);
+          touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+    .p1 .tb { border-color: rgba(231, 76, 60, 0.9); }
+    .p2 .tb { border-color: rgba(52, 152, 219, 0.9); }
+    .tb:active { background: rgba(255, 255, 255, 0.4); }
+    #topButtons { position: fixed; top: 8px; right: 8px; display: flex; gap: 6px; }
+    #topButtons .tb { width: 40px; height: 40px; font-size: 18px; border-color: rgba(255, 255, 255, 0.7); }
+    #turnPhone { display: none; }
+    @media (pointer: coarse) {
+      #touch { display: block; }
+      #help { display: none; }
+      .name { font-size: 16px; top: 8px; }
+      .bar { width: 160px; }
+      .health { top: 32px; height: 14px; }
+      .fire { top: 52px; width: 100px; }
+      #message h1 { font-size: 40px; }
+    }
+    @media (pointer: coarse) and (orientation: portrait) {
+      #turnPhone { display: flex; position: fixed; inset: 0; z-index: 10; align-items: center; justify-content: center;
+                   background: #222; font-size: 24px; padding: 20px; text-align: center; }
+    }
+  </style>
+</head>
+<body>
+  <div id="hud1" class="hud">
+    <div class="hit"></div>
+    <div class="name">Player 1</div>
+    <div class="bar health"><div></div></div>
+    <div class="bar fire"><div></div></div>
+    <div class="crosshair"></div>
+  </div>
+  <div id="hud2" class="hud">
+    <div class="hit"></div>
+    <div class="name">Player 2</div>
+    <div class="bar health"><div></div></div>
+    <div class="bar fire"><div></div></div>
+    <div class="crosshair"></div>
+  </div>
+  <div id="divider"></div>
+  <div id="help">
+    Player 1: W S walk, A D turn, Q jump, Space sword, E fireball &nbsp;|&nbsp;
+    Player 2: ↑ ↓ walk, ← → turn, - jump, Enter sword, Right Shift fireball &nbsp;|&nbsp; R restart, Esc menu
+  </div>
+  <div id="message"><h1></h1><p>Press R (or ↻) to play again, Esc (or ☰) for the menu</p></div>
+  <div id="touch"></div>
+  <div id="turnPhone">Turn your phone sideways to play</div>
+
+<!-- three.js draws the 3D world. The import map tells the browser where "three" is. -->
+<script type="importmap">
+  { "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+                 "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
+<script type="module">
+import * as THREE from "three";
+import { RoomEnvironment } from "three/addons/environments/RoomEnvironment.js";
+
+// ---------- Settings ----------
+const ARENA = 20;            // the arena goes from -20 to 20 on both sides
+const WALK_SPEED = 6;
+const TURN_SPEED = 2.6;      // radians per second
+const GRAVITY = 22;
+const JUMP_SPEED = 8.5;
+const MAX_HEALTH = 100;
+const SWORD_DAMAGE = 10;
+const SWORD_REACH = 2.4;
+const FIREBALL_DAMAGE = 15;
+const FIREBALL_SPEED = 18;
+const FIREBALL_COOLDOWN = 2;  // seconds
+const LAVA_DAMAGE = 8;
+const HEART_HEAL = 15;
+const HEART_EVERY = 10;       // seconds
+const MAX_HEARTS = 4;
+
+// Keys: the same attack and fireball keys as in the 2D game
+const CONTROLS = [
+  { forward: "KeyW", back: "KeyS", left: "KeyA", right: "KeyD", jump: "KeyQ", attack: "Space", fire: "KeyE" },
+  { forward: "ArrowUp", back: "ArrowDown", left: "ArrowLeft", right: "ArrowRight", jump: "Slash", attack: "Enter", fire: "ShiftRight" }
+];
+
+const keys = {};
+addEventListener("keydown", e => {
+  keys[e.code] = true;
+  if (e.code === "KeyR") restart();
+  if (e.code === "Escape") location.href = "index.html";
+  // Stop space, arrows and "/" from scrolling the page or opening quick find
+  if (["Space", "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight", "Slash", "Enter"].includes(e.code)) e.preventDefault();
+});
+addEventListener("keyup", e => { keys[e.code] = false; });
+
+// ---------- Touch buttons for phones ----------
+// Holding a button is the same as holding down its key, so the game code doesn't need to know about touch.
+const isPhone = matchMedia("(pointer: coarse)").matches;
+
+function touchButton(label, onDown, onUp) {
+  const b = document.createElement("button");
+  b.className = "tb";
+  b.textContent = label;
+  b.addEventListener("pointerdown", e => { e.preventDefault(); onDown(); });
+  for (const type of ["pointerup", "pointercancel", "pointerleave"]) {
+    b.addEventListener(type, e => { e.preventDefault(); if (onUp) onUp(); });
+  }
+  b.addEventListener("contextmenu", e => e.preventDefault());
+  return b;
+}
+
+function holdKey(label, code) {
+  return touchButton(label, () => { keys[code] = true; }, () => { keys[code] = false; });
+}
+
+// One player's buttons: walk and turn on the outside, jump/sword/fireball towards the middle
+function makePad(c, which) {
+  const pad = document.createElement("div");
+  pad.className = "pad " + which;
+  const dpad = document.createElement("div");
+  dpad.className = "dpad";
+  dpad.append(document.createElement("span"), holdKey("▲", c.forward), document.createElement("span"),
+              holdKey("◀", c.left), holdKey("▼", c.back), holdKey("▶", c.right));
+  const acts = document.createElement("div");
+  acts.className = "acts";
+  acts.append(holdKey("🔥", c.fire), document.createElement("span"), holdKey("⤒", c.jump), holdKey("⚔", c.attack));
+  pad.append(dpad, acts);
+  return pad;
+}
+
+function toggleFullscreen() {
+  try {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      return;
+    }
+    const page = document.documentElement;
+    Promise.resolve((page.requestFullscreen || page.webkitRequestFullscreen).call(page))
+      .then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape"))
+      .catch(() => {});
+  } catch (e) {}
+}
+
+const touchArea = document.getElementById("touch");
+const topButtons = document.createElement("div");
+topButtons.id = "topButtons";
+const tapButton = (label, onTap) => { const b = touchButton(label, () => {}); b.addEventListener("click", onTap); return b; };
+topButtons.append(tapButton("↻", () => restart()), tapButton("☰", () => { location.href = "index.html"; }));
+if (document.fullscreenEnabled || document.webkitFullscreenEnabled) topButtons.append(tapButton("⛶", toggleFullscreen));
+touchArea.append(makePad(CONTROLS[0], "p1"), makePad(CONTROLS[1], "p2"), topButtons);
+document.addEventListener("gesturestart", e => e.preventDefault());   // no pinch zoom in Safari
+
+// ---------- Renderer, scene and light ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, isPhone ? 1.5 : 2));   // phones: a bit fewer pixels so it runs smoothly
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+document.body.prepend(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color("#8cc8f0");
+scene.fog = new THREE.Fog("#a8d4f2", 30, 75);
+
+// Something for shiny metal to reflect, so armor and swords gleam instead of looking black
+scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(), 0.04).texture;
+scene.add(new THREE.HemisphereLight("#cfe8ff", "#4a6b2a", 0.6));
+const sun = new THREE.DirectionalLight("#fff2d6", 2.2);
+sun.position.set(18, 30, 12);
+sun.castShadow = true;
+sun.shadow.mapSize.setScalar(isPhone ? 1024 : 2048);
+Object.assign(sun.shadow.camera, { left: -26, right: 26, top: 26, bottom: -26, near: 1, far: 80 });
+sun.shadow.camera.layers.enableAll();   // the knights live on their own layers, but should still cast shadows
+scene.add(sun);
+
+// ---------- Textures painted in code (no image files needed) ----------
+function paintTexture(size, paint, repeat) {
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  paint(c.getContext("2d"), size);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repeat, repeat);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 8;
+  return t;
+}
+
+const grassTexture = paintTexture(256, (g, s) => {
+  g.fillStyle = "#4f8f32";
+  g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 3000; i++) {
+    g.fillStyle = ["#5fa83c", "#467f2b", "#6bb847", "#3d7226"][i % 4];
+    g.fillRect(Math.random() * s, Math.random() * s, 2, 3);
+  }
+}, 12);
+
+const stoneTexture = paintTexture(256, (g, s) => {
+  g.fillStyle = "#8f877b";
+  g.fillRect(0, 0, s, s);
+  // Rows of bricks, every other row shifted half a brick
+  for (let row = 0; row < 8; row++) {
+    for (let col = -1; col < 4; col++) {
+      const x = col * 64 + (row % 2) * 32;
+      const shadeValue = 120 + Math.random() * 40;
+      g.fillStyle = "rgb(" + shadeValue + "," + (shadeValue - 6) + "," + (shadeValue - 16) + ")";
+      g.fillRect(x + 2, row * 32 + 2, 60, 28);
+    }
+  }
+}, 1);
+
+const waterTexture = paintTexture(128, (g, s) => {
+  g.fillStyle = "#3a8ee0";
+  g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 40; i++) {
+    g.fillStyle = "rgba(255, 255, 255, " + (0.2 + Math.random() * 0.4) + ")";
+    g.fillRect(Math.random() * s, Math.random() * s, 3, 18 + Math.random() * 20);
+  }
+}, 1);
+
+// A big ball around everything, painted as a sky that is deep blue on top and light at the horizon
+const skyTexture = paintTexture(256, (g, s) => {
+  const sky = g.createLinearGradient(0, 0, 0, s);
+  sky.addColorStop(0, "#2f6fc0");
+  sky.addColorStop(0.5, "#a8d4f2");
+  sky.addColorStop(1, "#e8f4fb");
+  g.fillStyle = sky;
+  g.fillRect(0, 0, s, s);
+  // Soft clouds
+  g.fillStyle = "rgba(255, 255, 255, 0.6)";
+  for (let i = 0; i < 18; i++) {
+    const x = Math.random() * s, y = s * (0.25 + Math.random() * 0.2);
+    g.beginPath();
+    g.ellipse(x, y, 18 + Math.random() * 20, 5 + Math.random() * 4, 0, 0, Math.PI * 2);
+    g.fill();
+  }
+}, 1);
+const skyDome = new THREE.Mesh(new THREE.SphereGeometry(150, 32, 16),
+  new THREE.MeshBasicMaterial({ map: skyTexture, side: THREE.BackSide, fog: false }));
+scene.add(skyDome);
+
+// ---------- The arena ----------
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(ARENA * 2, ARENA * 2),
+                              new THREE.MeshStandardMaterial({ map: grassTexture, roughness: 0.95 }));
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+function stoneMaterial(repeatX, repeatY) {
+  const t = stoneTexture.clone();
+  t.needsUpdate = true;
+  t.repeat.set(repeatX, repeatY);
+  return new THREE.MeshStandardMaterial({ map: t, roughness: 0.9 });
+}
+
+function addBox(x, y, z, w, h, d, material) {
+  const box = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+  box.position.set(x, y, z);
+  box.castShadow = true;
+  box.receiveShadow = true;
+  scene.add(box);
+  return box;
+}
+
+// Castle walls around the arena, with battlements on top
+for (const side of [-1, 1]) {
+  addBox(0, 2.5, side * (ARENA + 0.5), ARENA * 2 + 2, 5, 1, stoneMaterial(10, 1.2));
+  addBox(side * (ARENA + 0.5), 2.5, 0, 1, 5, ARENA * 2 + 2, stoneMaterial(10, 1.2));
+  for (let i = -ARENA; i <= ARENA; i += 2) {
+    addBox(i, 5.4, side * (ARENA + 0.5), 1, 0.8, 1, stoneMaterial(0.25, 0.2));
+    addBox(side * (ARENA + 0.5), 5.4, i, 1, 0.8, 1, stoneMaterial(0.25, 0.2));
+  }
+}
+// Towers in the corners
+for (const x of [-1, 1]) for (const z of [-1, 1]) {
+  const tower = new THREE.Mesh(new THREE.CylinderGeometry(2, 2.2, 9, 16), stoneMaterial(3, 2));
+  tower.position.set(x * (ARENA + 0.5), 4.5, z * (ARENA + 0.5));
+  tower.castShadow = true;
+  scene.add(tower);
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(2.6, 3, 16), new THREE.MeshStandardMaterial({ color: "#8a2b2b" }));
+  roof.position.set(x * (ARENA + 0.5), 10.5, z * (ARENA + 0.5));
+  scene.add(roof);
+}
+
+// Platforms you can jump up on: { x, z, w, d, h } where h is how high the top is
+const platforms = [
+  { x: -10, z: -10, w: 5, d: 5, h: 1.2 },
+  { x: 10, z: 10, w: 5, d: 5, h: 1.2 },
+  { x: 10, z: -10, w: 5, d: 5, h: 1.2 },
+  { x: -10, z: 10, w: 5, d: 5, h: 1.2 },
+  { x: 0, z: 0, w: 6, d: 6, h: 2.4 },     // the tower in the middle: jump up from a step
+  { x: 0, z: 4.5, w: 3, d: 3, h: 1.2 },   // steps up to the middle
+  { x: 0, z: -4.5, w: 3, d: 3, h: 1.2 }
+];
+for (const p of platforms) {
+  addBox(p.x, p.h / 2, p.z, p.w, p.h, p.d, stoneMaterial(p.w / 4, p.h / 2));
+  const grassTop = addBox(p.x, p.h + 0.03, p.z, p.w, 0.06, p.d,
+                          new THREE.MeshStandardMaterial({ map: grassTexture, roughness: 0.95 }));
+  grassTop.castShadow = false;
+}
+
+// Lava pools: glowing, bubbling, and they bounce you up and hurt
+const lavaPools = [
+  { x: -12, z: 0, w: 5, d: 7 },
+  { x: 12, z: 0, w: 5, d: 7 }
+];
+// Lava texture: bright cracks of yellow in dark orange, it slowly flows
+const lavaTexture = paintTexture(256, (g, s) => {
+  g.fillStyle = "#b62a00";
+  g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 70; i++) {
+    const x = Math.random() * s, y = Math.random() * s, r = 10 + Math.random() * 30;
+    const blob = g.createRadialGradient(x, y, 0, x, y, r);
+    blob.addColorStop(0, "rgba(255, 230, 90, 0.9)");
+    blob.addColorStop(0.5, "rgba(255, 120, 0, 0.6)");
+    blob.addColorStop(1, "rgba(255, 80, 0, 0)");
+    g.fillStyle = blob;
+    g.fillRect(x - r, y - r, r * 2, r * 2);
+  }
+}, 1);
+const lavaMaterial = new THREE.MeshStandardMaterial({ map: lavaTexture, emissive: "#ff5a00", emissiveMap: lavaTexture,
+                                                      emissiveIntensity: 1.6, roughness: 0.5 });
+const lavaLights = [];
+for (const pool of lavaPools) {
+  const lava = new THREE.Mesh(new THREE.PlaneGeometry(pool.w, pool.d), lavaMaterial);
+  lava.rotation.x = -Math.PI / 2;
+  lava.position.set(pool.x, 0.02, pool.z);
+  scene.add(lava);
+  // A stone rim around the lava
+  addBox(pool.x, 0.1, pool.z - pool.d / 2 - 0.2, pool.w + 0.8, 0.2, 0.4, stoneMaterial(1, 0.1));
+  addBox(pool.x, 0.1, pool.z + pool.d / 2 + 0.2, pool.w + 0.8, 0.2, 0.4, stoneMaterial(1, 0.1));
+  const light = new THREE.PointLight("#ff6a00", 30, 12);
+  light.position.set(pool.x, 1.2, pool.z);
+  scene.add(light);
+  lavaLights.push(light);
+}
+
+// A waterfall pouring down the far wall into a pool
+const waterfall = new THREE.Mesh(new THREE.PlaneGeometry(4, 5),
+  new THREE.MeshStandardMaterial({ map: waterTexture, transparent: true, opacity: 0.85, roughness: 0.2 }));
+waterfall.position.set(0, 2.5, -ARENA + 0.05);
+scene.add(waterfall);
+const pool = new THREE.Mesh(new THREE.CircleGeometry(3, 32),
+  new THREE.MeshStandardMaterial({ color: "#2f7fd0", roughness: 0.1, metalness: 0.2 }));
+pool.rotation.x = -Math.PI / 2;
+pool.position.set(0, 0.03, -ARENA + 1.5);
+scene.add(pool);
+
+// ---------- Decorations ----------
+// Pine trees outside the walls, peeking over the top
+const trunkMaterial = new THREE.MeshStandardMaterial({ color: "#5b3a1a", roughness: 1 });
+const pineMaterial = new THREE.MeshStandardMaterial({ color: "#2e6b2f", roughness: 0.9 });
+for (let i = 0; i < (isPhone ? 24 : 40); i++) {
+  const angle = (i / (isPhone ? 24 : 40)) * Math.PI * 2 + Math.random() * 0.1;
+  const dist = ARENA + 5 + Math.random() * 12;
+  const tree = new THREE.Group();
+  const size = 0.8 + Math.random() * 0.6;
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.4, 2, 8), trunkMaterial);
+  trunk.position.y = 1;
+  tree.add(trunk);
+  for (let j = 0; j < 3; j++) {
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(2.4 - j * 0.6, 3, 10), pineMaterial);
+    cone.position.y = 3 + j * 1.6;
+    cone.castShadow = true;
+    tree.add(cone);
+  }
+  tree.scale.setScalar(size * 1.4);
+  tree.position.set(Math.cos(angle) * dist, 0, Math.sin(angle) * dist);
+  scene.add(tree);
+}
+// Grass outside the walls too, so the trees don't stand in the void
+const outerGrass = new THREE.Mesh(new THREE.CircleGeometry(60, 32),
+                                  new THREE.MeshStandardMaterial({ color: "#3f7a2a", roughness: 1 }));
+outerGrass.rotation.x = -Math.PI / 2;
+outerGrass.position.y = -0.02;
+scene.add(outerGrass);
+
+// Grass tufts on the arena floor (one InstancedMesh draws them all at once, which is fast)
+const tuftCount = isPhone ? 500 : 1400;
+const tufts = new THREE.InstancedMesh(new THREE.ConeGeometry(0.06, 0.32, 4),
+                                      new THREE.MeshStandardMaterial({ color: "#6bb847", roughness: 1 }), tuftCount);
+const place = new THREE.Object3D();
+for (let i = 0; i < tuftCount; i++) {
+  let x, z;
+  do {
+    x = (Math.random() * 2 - 1) * (ARENA - 0.5);
+    z = (Math.random() * 2 - 1) * (ARENA - 0.5);
+  } while (onLava(x, z) || platformAt(x, z, 0.2));
+  place.position.set(x, 0.14, z);
+  place.rotation.set((Math.random() - 0.5) * 0.4, Math.random() * Math.PI, (Math.random() - 0.5) * 0.4);
+  place.scale.setScalar(0.6 + Math.random() * 0.8);
+  place.updateMatrix();
+  tufts.setMatrixAt(i, place.matrix);
+}
+scene.add(tufts);
+
+// A few grey rocks
+const rockMaterial = new THREE.MeshStandardMaterial({ color: "#7d7a74", roughness: 0.95, flatShading: true });
+for (const [x, z, s] of [[-16, -16, 0.9], [16, -15, 0.7], [-17, 13, 0.8], [15, 16, 1], [-5, 17, 0.5], [6, -17, 0.6]]) {
+  const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(s), rockMaterial);
+  rock.position.set(x, s * 0.4, z);
+  rock.rotation.set(Math.random(), Math.random(), Math.random());
+  rock.castShadow = true;
+  rock.receiveShadow = true;
+  scene.add(rock);
+}
+
+// Banners in red and blue hanging on the inside of the walls
+const bannerMaterials = ["#c0392b", "#2c5aa0"].map(color => new THREE.MeshStandardMaterial({ color, roughness: 0.9, side: THREE.DoubleSide }));
+const bannerGold = new THREE.MeshStandardMaterial({ color: "#e0b030", metalness: 0.8, roughness: 0.3 });
+let bannerNumber = 0;
+for (let i = -12; i <= 12; i += 8) {
+  for (const [x, z, rotY] of [[i, -ARENA + 0.02, 0], [i, ARENA - 0.02, Math.PI], [-ARENA + 0.02, i, Math.PI / 2], [ARENA - 0.02, i, -Math.PI / 2]]) {
+    const banner = new THREE.Mesh(new THREE.PlaneGeometry(1.4, 2.6), bannerMaterials[bannerNumber++ % 2]);   // red, blue, red...
+    banner.position.set(x, 3.4, z);
+    banner.rotation.y = rotY;
+    scene.add(banner);
+    const stripe = new THREE.Mesh(new THREE.PlaneGeometry(0.2, 2.6), bannerGold);
+    stripe.position.set(x, 3.4, z);
+    stripe.rotation.y = rotY;
+    stripe.translateZ(0.01);
+    scene.add(stripe);
+  }
+}
+
+// Torches between the banners, with flickering flames (no real lights, so it stays fast)
+const flames = [];
+const flameMaterial = new THREE.MeshBasicMaterial({ color: "#ffb030" });
+for (let i = -16; i <= 16; i += 8) {
+  for (const [x, z, rotY] of [[i, -ARENA + 0.15, 0], [i, ARENA - 0.15, Math.PI]]) {
+    const torch = new THREE.Group();
+    const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.04, 0.6, 6), trunkMaterial);
+    torch.add(stick);
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.35, 8), flameMaterial);
+    flame.position.y = 0.45;
+    torch.add(flame);
+    torch.position.set(x, 2.5, z);
+    torch.rotation.y = rotY;
+    torch.rotateX(0.3);
+    scene.add(torch);
+    flames.push(flame);
+  }
+}
+
+// Little embers left behind by fireballs
+let embers = [];
+const emberGeometry = new THREE.SphereGeometry(0.12, 6, 4);
+
+// ---------- Knights ----------
+// Each knight is built from simple shapes. It faces -Z (the way the camera looks).
+function makeKnight(color) {
+  const knight = new THREE.Group();
+  const team = new THREE.MeshStandardMaterial({ color, roughness: 0.45, metalness: 0.3 });
+  const cloth = new THREE.MeshStandardMaterial({ color, roughness: 0.9, side: THREE.DoubleSide });
+  const steel = new THREE.MeshStandardMaterial({ color: "#e4e9ef", roughness: 0.28, metalness: 0.7 });
+  const darkSteel = new THREE.MeshStandardMaterial({ color: "#8a929c", roughness: 0.45, metalness: 0.6 });
+  const leather = new THREE.MeshStandardMaterial({ color: "#4a3020", roughness: 0.9 });
+  const gold = new THREE.MeshStandardMaterial({ color: "#e0b030", roughness: 0.25, metalness: 0.95 });
+  const black = new THREE.MeshStandardMaterial({ color: "#111" });
+  const part = (geometry, material, x, y, z, parent = knight) => {
+    const m = new THREE.Mesh(geometry, material);
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    parent.add(m);
+    return m;
+  };
+
+  // Legs swing from the hip: steel leg and a leather boot
+  const makeLeg = x => {
+    const leg = new THREE.Group();
+    leg.position.set(x, 0.85, 0);
+    knight.add(leg);
+    part(new THREE.CylinderGeometry(0.11, 0.09, 0.62, 12), darkSteel, 0, -0.3, 0, leg);
+    part(new THREE.SphereGeometry(0.1, 12, 8), steel, 0, -0.32, -0.06, leg);           // knee guard
+    part(new THREE.BoxGeometry(0.2, 0.2, 0.32), leather, 0, -0.75, -0.04, leg);         // boot
+    return leg;
+  };
+  const legL = makeLeg(-0.15);
+  const legR = makeLeg(0.15);
+
+  // Body: chain mail with a tabard in the knight's color over it, with a gold stripe down the front
+  part(new THREE.CylinderGeometry(0.32, 0.29, 0.78, 18), darkSteel, 0, 1.22, 0);
+  part(new THREE.CylinderGeometry(0.335, 0.31, 0.74, 18, 1, true, Math.PI / 2, Math.PI), cloth, 0, 1.2, 0);
+  part(new THREE.CylinderGeometry(0.335, 0.31, 0.74, 18, 1, true, -Math.PI / 2, Math.PI), cloth, 0, 1.2, 0);
+  part(new THREE.BoxGeometry(0.08, 0.7, 0.02), gold, 0, 1.2, -0.33);
+  part(new THREE.TorusGeometry(0.31, 0.04, 8, 24), leather, 0, 0.88, 0).rotation.x = Math.PI / 2;   // belt
+  part(new THREE.BoxGeometry(0.1, 0.08, 0.04), gold, 0, 0.88, -0.33);                               // buckle
+  // Round shoulder plates
+  for (const side of [-1, 1]) {
+    part(new THREE.SphereGeometry(0.17, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), steel, side * 0.38, 1.56, 0);
+  }
+  // Cape hanging down the back
+  const cape = part(new THREE.PlaneGeometry(0.62, 1.05), cloth, 0, 1.05, 0.34);
+  cape.rotation.x = 0.12;
+
+  // Helmet: a steel pot with a rounded top, a dark visor slit, breathing holes and a plume
+  part(new THREE.CylinderGeometry(0.23, 0.25, 0.34, 18), steel, 0, 1.8, 0);
+  part(new THREE.SphereGeometry(0.23, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2), steel, 0, 1.96, 0);
+  part(new THREE.BoxGeometry(0.34, 0.045, 0.05), black, 0, 1.84, -0.235);
+  for (const x of [-0.07, 0, 0.07]) part(new THREE.BoxGeometry(0.025, 0.025, 0.04), black, x, 1.72, -0.24);
+  part(new THREE.TorusGeometry(0.235, 0.02, 6, 24), gold, 0, 1.97, 0).rotation.x = Math.PI / 2;   // gold band
+  for (let i = 0; i < 5; i++) {
+    // The plume is a row of puffs curving backwards
+    part(new THREE.SphereGeometry(0.08 - i * 0.008, 10, 8), team, 0, 2.2 - i * i * 0.012, -0.05 + i * 0.09);
+  }
+
+  // Sword arm: the whole arm turns when swinging
+  const swordArm = new THREE.Group();
+  swordArm.position.set(0.44, 1.48, 0);
+  knight.add(swordArm);
+  part(new THREE.CylinderGeometry(0.08, 0.07, 0.5, 10), darkSteel, 0, -0.25, 0, swordArm);
+  part(new THREE.SphereGeometry(0.08, 10, 8), steel, 0, -0.52, 0, swordArm);                   // glove
+  part(new THREE.BoxGeometry(0.06, 0.02, 1.0), steel, 0, -0.55, -0.62, swordArm);              // blade
+  part(new THREE.BoxGeometry(0.03, 0.035, 1.0), steel, 0, -0.55, -0.62, swordArm);             // blade ridge
+  part(new THREE.BoxGeometry(0.32, 0.05, 0.05), gold, 0, -0.55, -0.1, swordArm);               // crossguard
+  part(new THREE.SphereGeometry(0.04, 8, 6), gold, 0, -0.55, 0.08, swordArm);                  // pommel
+
+  // Round shield on the other arm: team color, steel rim and a golden boss in the middle
+  const shield = new THREE.Group();
+  shield.position.set(-0.5, 1.2, -0.12);
+  shield.rotation.z = Math.PI / 2;
+  knight.add(shield);
+  part(new THREE.CylinderGeometry(0.36, 0.36, 0.05, 28), team, 0, 0, 0, shield);
+  part(new THREE.TorusGeometry(0.36, 0.03, 8, 28), steel, 0, 0, 0, shield).rotation.x = Math.PI / 2;
+  part(new THREE.SphereGeometry(0.08, 12, 8), gold, 0, 0.04, 0, shield);
+
+  knight.userData = { legL, legR, swordArm, cape };
+  scene.add(knight);
+  return knight;
+}
+
+// The sword you see in your own hand, in the bottom right of your view
+function makeViewSword(camera, layer) {
+  const sword = new THREE.Group();
+  const steel = new THREE.MeshStandardMaterial({ color: "#eef2f6", roughness: 0.2, metalness: 0.8 });
+  const gold = new THREE.MeshStandardMaterial({ color: "#f2c84b", roughness: 0.3, metalness: 0.6 });
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.9), steel);
+  blade.position.z = -0.5;
+  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.05, 0.05), gold);
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.2), new THREE.MeshStandardMaterial({ color: "#5b3a1a" }));
+  handle.position.z = 0.12;
+  sword.add(blade, guard, handle);
+  sword.scale.setScalar(0.5);
+  sword.position.set(0.11, -0.16, -0.5);   // each view is narrow (half the screen), so keep it near the middle
+  sword.rotation.set(0.35, -0.15, 0);
+  sword.traverse(o => o.layers.set(layer));
+  camera.add(sword);
+  return sword;
+}
+
+const players = [];
+for (let i = 0; i < 2; i++) {
+  const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 200);
+  // Layers: knight 1 is on layer 1 and knight 2 on layer 2. Each camera skips its own knight,
+  // so you don't see the inside of your own helmet. Layers 3 and 4 are the swords in your hand.
+  camera.layers.enable(i === 0 ? 2 : 1);
+  camera.layers.enable(3 + i);
+  scene.add(camera);
+  const model = makeKnight(i === 0 ? "#c0392b" : "#2c5aa0");
+  model.traverse(o => o.layers.set(1 + i));
+  players.push({
+    camera, model,
+    viewSword: makeViewSword(camera, 3 + i),
+    controls: CONTROLS[i],
+    hud: document.getElementById("hud" + (i + 1)),
+    name: "Player " + (i + 1)
+  });
+}
+
+// Show the names people logged in with, like in the 2D game (only the first player, it is one computer)
+try {
+  const saved = localStorage.getItem("knightFightUsername");
+  if (saved) players[0].name = saved;
+} catch (e) {}
+players.forEach(p => { p.hud.querySelector(".name").textContent = p.name; });
+
+// ---------- Hearts, fireballs and explosions ----------
+let hearts = [];
+let fireballs = [];
+let explosions = [];
+let heartTimer = HEART_EVERY;
+let winner = null;
+
+const heartShape = new THREE.Shape();
+heartShape.moveTo(0, -0.3);
+heartShape.bezierCurveTo(-0.45, 0, -0.35, 0.35, 0, 0.15);
+heartShape.bezierCurveTo(0.35, 0.35, 0.45, 0, 0, -0.3);
+const heartGeometry = new THREE.ExtrudeGeometry(heartShape, { depth: 0.12, bevelEnabled: true, bevelSize: 0.04, bevelThickness: 0.04 });
+const heartMaterial = new THREE.MeshStandardMaterial({ color: "#ff2d6a", emissive: "#a0002a", emissiveIntensity: 0.8, roughness: 0.3 });
+
+function onLava(x, z) {
+  return lavaPools.some(p => Math.abs(x - p.x) < p.w / 2 && Math.abs(z - p.z) < p.d / 2);
+}
+
+function spawnHeart() {
+  let x, z;
+  do {
+    x = (Math.random() * 2 - 1) * (ARENA - 2);
+    z = (Math.random() * 2 - 1) * (ARENA - 2);
+  } while (onLava(x, z) || platforms.some(p => Math.abs(x - p.x) < p.w / 2 + 0.5 && Math.abs(z - p.z) < p.d / 2 + 0.5));
+  const mesh = new THREE.Mesh(heartGeometry, heartMaterial);
+  mesh.position.set(x, 0.9, z);
+  mesh.castShadow = true;
+  scene.add(mesh);
+  hearts.push(mesh);
+}
+
+const fireballGeometry = new THREE.SphereGeometry(0.3, 16, 12);
+const fireballMaterial = new THREE.MeshStandardMaterial({ color: "#ffb000", emissive: "#ff6a00", emissiveIntensity: 3 });
+
+function shootFireball(p) {
+  const dir = forwardOf(p);
+  const mesh = new THREE.Mesh(fireballGeometry, fireballMaterial);
+  mesh.position.set(p.x + dir.x * 0.8, p.y + 1.4, p.z + dir.z * 0.8);
+  const light = new THREE.PointLight("#ff7a00", 20, 8);
+  mesh.add(light);
+  scene.add(mesh);
+  fireballs.push({ mesh, dir, owner: p, life: 3 });
+}
+
+function explode(position) {
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.4, 16, 12),
+    new THREE.MeshBasicMaterial({ color: "#ffb000", transparent: true }));
+  mesh.position.copy(position);
+  scene.add(mesh);
+  explosions.push({ mesh, time: 0 });
+}
+
+// ---------- Players ----------
+function forwardOf(p) {
+  return { x: -Math.sin(p.yaw), z: -Math.cos(p.yaw) };
+}
+
+function restart() {
+  players.forEach((p, i) => {
+    Object.assign(p, {
+      x: 0, y: 0, z: i === 0 ? 15 : -15, vy: 0,
+      yaw: i === 0 ? 0 : Math.PI,   // face each other
+      health: MAX_HEALTH, onGround: true,
+      swing: 0, swingCooldown: 0, fireCooldown: 0, walk: 0, hurt: 0
+    });
+  });
+  for (const list of [hearts, fireballs, explosions, embers]) list.forEach(o => scene.remove(o.mesh || o));
+  hearts = [];
+  fireballs = [];
+  explosions = [];
+  embers = [];
+  spawnHeart();
+  spawnHeart();
+  heartTimer = HEART_EVERY;
+  winner = null;
+  document.getElementById("message").style.display = "none";
+}
+
+// Is (x, z) inside a platform, with some extra room around it?
+function platformAt(x, z, extra) {
+  return platforms.find(p => Math.abs(x - p.x) < p.w / 2 + extra && Math.abs(z - p.z) < p.d / 2 + extra);
+}
+
+// Move sideways, but not into walls or into the side of a platform
+function tryMove(p, dx, dz) {
+  for (const [mx, mz] of [[dx, 0], [0, dz]]) {   // one direction at a time, so you slide along walls
+    const nx = Math.max(-ARENA + 0.5, Math.min(ARENA - 0.5, p.x + mx));
+    const nz = Math.max(-ARENA + 0.5, Math.min(ARENA - 0.5, p.z + mz));
+    const block = platformAt(nx, nz, 0.4);
+    if (!block || p.y >= block.h - 0.05) { p.x = nx; p.z = nz; }
+  }
+}
+
+function hurt(p, damage, fromX, fromZ) {
+  p.health -= damage;
+  p.hurt = 0.3;
+  // Knock back away from the hit
+  const dx = p.x - fromX, dz = p.z - fromZ;
+  const len = Math.hypot(dx, dz) || 1;
+  tryMove(p, dx / len * 1.2, dz / len * 1.2);
+}
+
+function updatePlayer(p, other, dt) {
+  const c = p.controls;
+  if (keys[c.left]) p.yaw += TURN_SPEED * dt;
+  if (keys[c.right]) p.yaw -= TURN_SPEED * dt;
+  const dir = forwardOf(p);
+  let move = 0;
+  if (keys[c.forward]) move += 1;
+  if (keys[c.back]) move -= 0.6;
+  if (move) {
+    tryMove(p, dir.x * move * WALK_SPEED * dt, dir.z * move * WALK_SPEED * dt);
+    p.walk += dt * 10;
+  }
+
+  // Jumping and falling, landing on the ground or on top of platforms
+  if (keys[c.jump] && p.onGround) { p.vy = JUMP_SPEED; p.onGround = false; }
+  const prevY = p.y;
+  p.vy -= GRAVITY * dt;
+  p.y += p.vy * dt;
+  p.onGround = false;
+  const under = platformAt(p.x, p.z, 0.3);
+  const floor = under && prevY >= under.h - 0.05 ? under.h : 0;
+  if (p.y <= floor) { p.y = floor; p.vy = 0; p.onGround = true; }
+
+  // Lava: hurts and throws you up in the air
+  if (p.y === 0 && onLava(p.x, p.z)) {
+    p.health -= LAVA_DAMAGE;
+    p.hurt = 0.3;
+    p.vy = 10;
+    p.onGround = false;
+    explode(new THREE.Vector3(p.x, 0.3, p.z));
+  }
+
+  // Sword: hits the other knight if they are close and in front of you
+  p.swingCooldown -= dt;
+  if (keys[c.attack] && p.swingCooldown <= 0) {
+    p.swing = 0.3;
+    p.swingCooldown = 0.5;
+    const dx = other.x - p.x, dz = other.z - p.z;
+    const dist = Math.hypot(dx, dz);
+    const inFront = (dx * dir.x + dz * dir.z) / (dist || 1) > 0.5;
+    if (dist < SWORD_REACH && inFront && Math.abs(other.y - p.y) < 1.5) hurt(other, SWORD_DAMAGE, p.x, p.z);
+  }
+  p.swing = Math.max(0, p.swing - dt);
+
+  // Fireball, with a cooldown so you can't spam it
+  p.fireCooldown = Math.max(0, p.fireCooldown - dt);
+  if (keys[c.fire] && p.fireCooldown === 0) {
+    shootFireball(p);
+    p.fireCooldown = FIREBALL_COOLDOWN;
+  }
+  p.hurt = Math.max(0, p.hurt - dt);
+}
+
+// The knights can't walk through each other
+function separate(a, b) {
+  const dx = b.x - a.x, dz = b.z - a.z;
+  const dist = Math.hypot(dx, dz);
+  if (dist < 1 && dist > 0 && Math.abs(a.y - b.y) < 1.5) {
+    const push = (1 - dist) / 2;
+    tryMove(a, -dx / dist * push, -dz / dist * push);
+    tryMove(b, dx / dist * push, dz / dist * push);
+  }
+}
+
+function updateWorld(dt, time) {
+  // Fireballs fly straight and explode on the other knight or a wall
+  for (const f of fireballs) {
+    f.mesh.position.x += f.dir.x * FIREBALL_SPEED * dt;
+    f.mesh.position.z += f.dir.z * FIREBALL_SPEED * dt;
+    f.life -= dt;
+    const target = players.find(p => p !== f.owner);
+    const pos = f.mesh.position;
+    const hitKnight = Math.hypot(pos.x - target.x, pos.z - target.z) < 0.8 && pos.y > target.y && pos.y < target.y + 2.2;
+    const hitWall = Math.abs(pos.x) > ARENA || Math.abs(pos.z) > ARENA ||
+                    (platformAt(pos.x, pos.z, 0) && pos.y < platformAt(pos.x, pos.z, 0).h);
+    if (hitKnight) hurt(target, FIREBALL_DAMAGE, pos.x - f.dir.x, pos.z - f.dir.z);
+    if (hitKnight || hitWall || f.life <= 0) {
+      explode(pos);
+      scene.remove(f.mesh);
+      f.done = true;
+    }
+  }
+  fireballs = fireballs.filter(f => !f.done);
+
+  // Explosions grow and fade
+  for (const e of explosions) {
+    e.time += dt;
+    e.mesh.scale.setScalar(1 + e.time * 8);
+    e.mesh.material.opacity = Math.max(0, 1 - e.time * 2.5);
+    if (e.time > 0.4) { scene.remove(e.mesh); e.done = true; }
+  }
+  explosions = explosions.filter(e => !e.done);
+
+  // Hearts spin, bob, and heal whoever walks into them
+  heartTimer -= dt;
+  if (heartTimer <= 0) {
+    if (hearts.length < MAX_HEARTS) spawnHeart();
+    heartTimer = HEART_EVERY;
+  }
+  for (const h of hearts) {
+    h.rotation.y = time * 2;
+    h.position.y = 0.9 + Math.sin(time * 3 + h.position.x) * 0.15;
+    for (const p of players) {
+      if (!h.taken && Math.hypot(p.x - h.position.x, p.z - h.position.z) < 1 && p.y < 1.5) {
+        p.health = Math.min(MAX_HEALTH, p.health + HEART_HEAL);
+        h.taken = true;
+        scene.remove(h);
+      }
+    }
+  }
+  hearts = hearts.filter(h => !h.taken);
+
+  // Fireballs leave a trail of glowing embers that shrink and fade
+  for (const f of fireballs) {
+    const ember = new THREE.Mesh(emberGeometry, new THREE.MeshBasicMaterial({ color: "#ff8a1a", transparent: true }));
+    ember.position.copy(f.mesh.position);
+    scene.add(ember);
+    embers.push({ mesh: ember, time: 0 });
+  }
+  for (const e of embers) {
+    e.time += dt;
+    e.mesh.scale.setScalar(Math.max(0.01, 1 - e.time * 3));
+    e.mesh.material.opacity = Math.max(0, 1 - e.time * 3);
+    if (e.time > 0.33) { scene.remove(e.mesh); e.mesh.material.dispose(); e.done = true; }
+  }
+  embers = embers.filter(e => !e.done);
+
+  // Torches flicker
+  flames.forEach((f, i) => { f.scale.set(1, 0.8 + Math.sin(time * 15 + i * 7) * 0.2 + Math.random() * 0.1, 1); });
+
+  // Moving water and slowly flowing, flickering lava
+  waterTexture.offset.y += dt * 1.5;
+  lavaTexture.offset.x += dt * 0.03;
+  lavaTexture.offset.y += dt * 0.02;
+  lavaMaterial.emissiveIntensity = 1.4 + Math.sin(time * 3) * 0.3;
+  lavaLights.forEach((l, i) => { l.intensity = 25 + Math.sin(time * 5 + i) * 6; });
+}
+
+// Put each knight's model and camera where the player is
+function placePlayer(p) {
+  p.model.position.set(p.x, p.y, p.z);
+  p.model.rotation.y = p.yaw;
+  const { legL, legR, swordArm, cape } = p.model.userData;
+  const step = Math.sin(p.walk) * 0.5;
+  legL.rotation.x = step;
+  legR.rotation.x = -step;
+  cape.rotation.x = 0.12 + Math.abs(step) * 0.3;   // the cape flaps when walking
+  swordArm.rotation.x = p.swing > 0 ? -1.6 * (p.swing / 0.3) : -0.3;
+  p.camera.position.set(p.x, p.y + 1.7, p.z);
+  p.camera.rotation.set(0, p.yaw, 0);
+  // The sword in your own view swings down when you attack
+  p.viewSword.rotation.x = p.swing > 0 ? 0.35 - 1.4 * Math.sin((p.swing / 0.3) * Math.PI) : 0.35 + Math.sin(p.walk) * 0.03;
+  // HUD
+  p.hud.querySelector(".health div").style.width = Math.max(0, p.health) + "%";
+  p.hud.querySelector(".fire div").style.width = (1 - p.fireCooldown / FIREBALL_COOLDOWN) * 100 + "%";
+  p.hud.querySelector(".hit").style.opacity = p.hurt > 0 ? 1 : 0;
+}
+
+// ---------- Game loop: two halves of the screen, one camera each ----------
+function resize() {
+  renderer.setSize(innerWidth, innerHeight);
+  players.forEach(p => { p.camera.aspect = (innerWidth / 2) / innerHeight; p.camera.updateProjectionMatrix(); });
+}
+addEventListener("resize", resize);
+resize();
+restart();
+
+const clock = new THREE.Clock();
+function loop() {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const time = clock.elapsedTime;
+  if (!winner) {
+    updatePlayer(players[0], players[1], dt);
+    updatePlayer(players[1], players[0], dt);
+    separate(players[0], players[1]);
+    updateWorld(dt, time);
+    const loser = players.find(p => p.health <= 0);
+    if (loser) {
+      winner = players.find(p => p !== loser).name;
+      const message = document.getElementById("message");
+      message.querySelector("h1").textContent = winner + " wins!";
+      message.style.display = "flex";
+    }
+  }
+  players.forEach(placePlayer);
+
+  const half = innerWidth / 2;
+  renderer.setScissorTest(true);
+  players.forEach((p, i) => {
+    renderer.setViewport(i * half, 0, half, innerHeight);
+    renderer.setScissor(i * half, 0, half, innerHeight);
+    renderer.render(scene, p.camera);
+  });
+  requestAnimationFrame(loop);
+}
+loop();
+
+// Handy for testing in the browser console
+window.game = { players, restart, keys, get hearts() { return hearts; }, get fireballs() { return fireballs; }, get winner() { return winner; } };
+</script>
+</body>
+</html>

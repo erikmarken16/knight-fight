@@ -7,8 +7,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Knight Fight</title>
-  <!-- PeerJS connects two players' browsers to each other for online games -->
-  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <!-- PeerJS connects two players' browsers to each other for online games.
+       "async" means the game doesn't have to wait for it to load. -->
+  <script async src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
     body { margin: 0; background: #222; color: #eee; font-family: sans-serif; text-align: center; }
     /* No zooming when you tap quickly twice (Safari ignores user-scalable=no) */
@@ -71,7 +72,7 @@
       /* position: fixed with inset 0 lets every browser itself size it to exactly the visible screen,
          also when address bars come and go or the phone goes full screen */
       #wrap { position: fixed; inset: 0; margin: 0; width: auto;
-              background: linear-gradient(#87ceeb 94%, #5a8f3c 94%); }
+              background: linear-gradient(#3d8ad6 0%, #c4e8f7 94%, #5fae3c 94%, #3f7f2a 95.5%, #6b4a2b 95.8%, #3e2a17 100%); }
       /* If a browser still leaves a gap at the bottom, it shows ground instead of a dark strip */
       html, body { background: #5a8f3c; }
       canvas { width: 100%; height: 100%; object-fit: contain; border: none; background: transparent; }
@@ -98,7 +99,7 @@
       <button id="logIn">2 - Log in</button>
       <p id="loginNote" class="note"></p>
       <!-- Change the number with every upload, so you can see if a phone has the newest version -->
-      <p class="version">Version 11</p>
+      <p class="version">Version 12</p>
     </div>
     <!-- Log in: just a username -->
     <div id="loginForm" class="menu" style="display: none">
@@ -116,7 +117,14 @@
       <button id="toLoginMenu">3 - Go to the login menu</button>
       <button id="friends">4 - Friends</button>
       <p id="menuNote" class="note"></p>
-      <p class="version">Version 11</p>
+      <p class="version">Version 12</p>
+    </div>
+    <!-- Play on one computer: pick the normal 2D game or the first person 3D game -->
+    <div id="modeMenu" class="menu" style="display: none">
+      <h1>Choose a mode</h1>
+      <button id="play2D">1 - 2D</button>
+      <button id="play3D">2 - 3D (first person)</button>
+      <button id="modeBack">Back</button>
     </div>
     <!-- Online: one player creates a game and gets a code, the other joins with it -->
     <div id="onlineMenu" class="menu" style="display: none">
@@ -932,7 +940,33 @@ function updateTouchControls() {
   if (!started) for (const k in keys) keys[k] = false;  // let go of every button
 }
 
-document.getElementById("oneComputer").addEventListener("click", startOneComputer);
+// "Play on one computer" first asks: 2D or 3D?
+const modeMenu = document.getElementById("modeMenu");
+
+function openModeMenu() {
+  menu.style.display = "none";
+  menuNote.textContent = "";
+  modeMenu.style.display = "flex";
+}
+
+function closeModeMenu() {
+  modeMenu.style.display = "none";
+  menu.style.display = "flex";
+}
+
+function play2D() {
+  modeMenu.style.display = "none";
+  startOneComputer();
+}
+
+function play3D() {
+  location.href = "3d.html";  // the 3D game is its own page
+}
+
+document.getElementById("oneComputer").addEventListener("click", openModeMenu);
+document.getElementById("play2D").addEventListener("click", play2D);
+document.getElementById("play3D").addEventListener("click", play3D);
+document.getElementById("modeBack").addEventListener("click", closeModeMenu);
 document.getElementById("twoComputers").addEventListener("click", startTwoComputers);
 
 function reset() {
@@ -965,6 +999,13 @@ document.addEventListener("keydown", function (e) {
   const key = e.key.length === 1 ? e.key.toLowerCase() : e.key;
   keys[key] = true;
   keys[e.code] = true;   // e.code tells left and right Shift apart
+  if (modeMenu.style.display !== "none") {
+    // Choosing 2D or 3D: 1, 2 or Esc
+    if (key === "1") play2D();
+    if (key === "2") play3D();
+    if (key === "Escape") closeModeMenu();
+    return;
+  }
   if (onlineMenu.style.display !== "none") {
     // Typing a code: Enter joins, Esc goes back. Other keys just type.
     if (key === "Enter") joinGame();
@@ -1005,7 +1046,7 @@ document.addEventListener("keydown", function (e) {
   }
   if (!started) {
     // In the menu: 1 to 4 pick an option
-    if (key === "1") startOneComputer();
+    if (key === "1") openModeMenu();
     if (key === "2") startTwoComputers();
     if (key === "3") thirdOption();
     if (key === "4") openFriendsMenu();
@@ -1190,15 +1231,30 @@ function updateHearts() {
 }
 
 function drawHeart(h) {
-  ctx.fillStyle = "#e0245e";
+  const y = h.y + Math.sin(frame * 0.08 + h.x) * 3;   // hearts bob up and down
+  // Soft pink glow behind the heart
+  const glow = ctx.createRadialGradient(h.x, y, 2, h.x, y, 24);
+  glow.addColorStop(0, "rgba(255, 120, 160, 0.6)");
+  glow.addColorStop(1, "rgba(255, 120, 160, 0)");
+  ctx.fillStyle = glow;
+  ctx.fillRect(h.x - 24, y - 24, 48, 48);
+  const fill = ctx.createLinearGradient(h.x, y - 10, h.x, y + 12);
+  fill.addColorStop(0, "#ff5c8a");
+  fill.addColorStop(1, "#b0123f");
+  ctx.fillStyle = fill;
   ctx.beginPath();
-  ctx.arc(h.x - 5, h.y - 3, 6, 0, Math.PI * 2);
-  ctx.arc(h.x + 5, h.y - 3, 6, 0, Math.PI * 2);
+  ctx.arc(h.x - 5, y - 3, 6, 0, Math.PI * 2);
+  ctx.arc(h.x + 5, y - 3, 6, 0, Math.PI * 2);
   ctx.fill();
   ctx.beginPath();
-  ctx.moveTo(h.x - 11, h.y - 1);
-  ctx.lineTo(h.x + 11, h.y - 1);
-  ctx.lineTo(h.x, h.y + 11);
+  ctx.moveTo(h.x - 11, y - 1);
+  ctx.lineTo(h.x + 11, y - 1);
+  ctx.lineTo(h.x, y + 11);
+  ctx.fill();
+  // Shine
+  ctx.fillStyle = "rgba(255, 255, 255, 0.7)";
+  ctx.beginPath();
+  ctx.arc(h.x - 6, y - 5, 2, 0, Math.PI * 2);
   ctx.fill();
 }
 
@@ -1282,27 +1338,44 @@ function updateExplosions() {
 }
 
 function drawFireball(f) {
-  ctx.fillStyle = "#ff6a00";
+  // Fading trail behind the fireball (the guest only gets x and y, so the trail points away from the middle)
+  const back = f.vx ? -Math.sign(f.vx) : (f.x < canvas.width / 2 ? -1 : 1);
+  for (let i = 1; i <= 4; i++) {
+    ctx.fillStyle = "rgba(255, " + (140 - i * 20) + ", 0, " + (0.5 - i * 0.1) + ")";
+    ctx.beginPath();
+    ctx.arc(f.x + back * i * 9, f.y + Math.sin(frame * 0.5 + i) * 2, 10 - i * 1.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const glow = ctx.createRadialGradient(f.x, f.y, 0, f.x, f.y, 22);
+  glow.addColorStop(0, "#fff8c0");
+  glow.addColorStop(0.3, "#ffb000");
+  glow.addColorStop(0.6, "rgba(255, 80, 0, 0.8)");
+  glow.addColorStop(1, "rgba(255, 60, 0, 0)");
+  ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(f.x, f.y, 10, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = "#ffd700";
-  ctx.beginPath();
-  ctx.arc(f.x, f.y, 5, 0, Math.PI * 2);
+  ctx.arc(f.x, f.y, 22, 0, Math.PI * 2);
   ctx.fill();
 }
 
-// An explosion is a growing circle that fades out
+// An explosion is a growing fireball that fades out
 function drawExplosion(ex) {
   const alpha = 1 - ex.timer / 25;
-  ctx.fillStyle = "rgba(255, 120, 0, " + alpha + ")";
+  const r = 12 + ex.timer * 2.4;
+  const glow = ctx.createRadialGradient(ex.x, ex.y, 0, ex.x, ex.y, r);
+  glow.addColorStop(0, "rgba(255, 250, 200, " + alpha + ")");
+  glow.addColorStop(0.4, "rgba(255, 160, 0, " + alpha + ")");
+  glow.addColorStop(0.8, "rgba(220, 40, 0, " + alpha * 0.6 + ")");
+  glow.addColorStop(1, "rgba(120, 20, 0, 0)");
+  ctx.fillStyle = glow;
   ctx.beginPath();
-  ctx.arc(ex.x, ex.y, 10 + ex.timer * 2, 0, Math.PI * 2);
+  ctx.arc(ex.x, ex.y, r, 0, Math.PI * 2);
   ctx.fill();
-  ctx.fillStyle = "rgba(255, 230, 80, " + alpha + ")";
-  ctx.beginPath();
-  ctx.arc(ex.x, ex.y, 5 + ex.timer, 0, Math.PI * 2);
-  ctx.fill();
+  // Sparks flying out
+  ctx.fillStyle = "rgba(255, 220, 120, " + alpha + ")";
+  for (let i = 0; i < 8; i++) {
+    const a = i * Math.PI / 4 + ex.x;
+    ctx.fillRect(ex.x + Math.cos(a) * r * 1.1, ex.y + Math.sin(a) * r * 1.1, 3, 3);
+  }
 }
 
 // Push the knights apart so they can't walk through each other
@@ -1334,64 +1407,341 @@ function overlaps(box, k) {
          box.y < k.y && box.y + box.height > k.y - k.height;
 }
 
+// A rectangle with round corners (filled)
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+  ctx.fill();
+}
+
+// Make a color lighter (amount > 0) or darker (amount < 0). Takes "#rrggbb".
+function shade(hex, amount) {
+  const n = parseInt(hex.slice(1), 16);
+  const c = v => Math.max(0, Math.min(255, Math.round(v + amount * 255)));
+  return "rgb(" + c(n >> 16) + "," + c((n >> 8) & 255) + "," + c(n & 255) + ")";
+}
+
+function drawSword(x, y, angle) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(angle);
+  // Blade (points along +x)
+  const blade = ctx.createLinearGradient(0, -3, 0, 3);
+  blade.addColorStop(0, "#ffffff");
+  blade.addColorStop(0.5, "#c9d1d9");
+  blade.addColorStop(1, "#7d8590");
+  ctx.fillStyle = blade;
+  ctx.beginPath();
+  ctx.moveTo(6, -3);
+  ctx.lineTo(44, -3);
+  ctx.lineTo(50, 0);
+  ctx.lineTo(44, 3);
+  ctx.lineTo(6, 3);
+  ctx.fill();
+  // Gold guard and handle
+  ctx.fillStyle = "#d4a017";
+  ctx.fillRect(3, -8, 4, 16);
+  ctx.fillStyle = "#5b3a1a";
+  ctx.fillRect(-8, -2, 11, 4);
+  ctx.fillStyle = "#d4a017";
+  ctx.beginPath();
+  ctx.arc(-9, 0, 3, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.restore();
+}
+
+function drawShield(x, y, color, big) {
+  const w = big ? 18 : 14;
+  const h = big ? 44 : 30;
+  ctx.fillStyle = "#9aa3ad";   // metal rim
+  roundRect(x - w / 2 - 2, y - 2, w + 4, h + 4, 6);
+  const face = ctx.createLinearGradient(x - w / 2, y, x + w / 2, y);
+  face.addColorStop(0, shade(color, 0.15));
+  face.addColorStop(1, shade(color, -0.2));
+  ctx.fillStyle = face;
+  roundRect(x - w / 2, y, w, h, 5);
+  ctx.fillStyle = "#f1c40f";   // golden stripe
+  ctx.fillRect(x - 2, y + 4, 4, h - 8);
+}
+
 function drawKnight(k) {
   const top = k.y - k.height;
+  const mid = k.x + k.width / 2;
+  const front = k.facing;   // 1 = facing right, -1 = facing left
+  // Legs swing as the knight moves sideways
+  const step = Math.sin(k.x * 0.12) * 6;
 
-  // Body (armor)
+  // Shadow on the ground under the feet
+  ctx.fillStyle = "rgba(0, 0, 0, 0.25)";
+  ctx.beginPath();
+  ctx.ellipse(mid, k.y, 22, 5, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Shield on the back arm (in front and bigger while blocking)
+  if (!k.blocking) drawShield(mid - front * 18, top + 26, k.color, false);
+
+  // Legs with dark boots
+  ctx.fillStyle = "#4a5058";
+  ctx.fillRect(mid - 11 + step, k.y - 22, 9, 18);
+  ctx.fillRect(mid + 2 - step, k.y - 22, 9, 18);
+  ctx.fillStyle = "#2b2b2b";
+  ctx.fillRect(mid - 12 + step, k.y - 6, 11, 6);
+  ctx.fillRect(mid + 1 - step, k.y - 6, 11, 6);
+
+  // Body armor with a shiny side
+  const body = ctx.createLinearGradient(k.x, 0, k.x + k.width, 0);
+  body.addColorStop(0, shade(k.color, 0.18));
+  body.addColorStop(0.5, k.color);
+  body.addColorStop(1, shade(k.color, -0.22));
+  ctx.fillStyle = body;
+  roundRect(k.x + 2, top + 20, k.width - 4, k.height - 40, 6);
+  // Silver chest plate and belt
+  ctx.fillStyle = "rgba(220, 225, 232, 0.55)";
+  roundRect(mid - 9, top + 24, 18, 16, 4);
+  ctx.fillStyle = "#3b2a1a";
+  ctx.fillRect(k.x + 2, top + 44, k.width - 4, 5);
+  ctx.fillStyle = "#d4a017";
+  ctx.fillRect(mid - 3, top + 44, 6, 5);
+
+  // Helmet: shiny steel with a plume in the knight's color
   ctx.fillStyle = k.color;
-  ctx.fillRect(k.x, top + 20, k.width, k.height - 20);
+  ctx.beginPath();
+  ctx.ellipse(mid - front * 6, top - 2, 12, 6, -front * 0.5, 0, Math.PI * 2);
+  ctx.fill();
+  const helmet = ctx.createLinearGradient(k.x, top, k.x + k.width, top + 22);
+  helmet.addColorStop(0, "#f2f4f7");
+  helmet.addColorStop(0.5, "#aeb6bf");
+  helmet.addColorStop(1, "#6b7480");
+  ctx.fillStyle = helmet;
+  roundRect(k.x + 5, top, k.width - 10, 24, 8);
+  // Visor slit and breathing holes on the side the knight is facing
+  ctx.fillStyle = "#15181c";
+  const visorX = front === 1 ? k.x + k.width - 19 : k.x + 7;
+  ctx.fillRect(visorX, top + 9, 12, 4);
+  ctx.fillRect(visorX + 4, top + 16, 2, 2);
+  ctx.fillRect(visorX + 8, top + 16, 2, 2);
 
-  // Helmet
-  ctx.fillStyle = "#aaa";
-  ctx.fillRect(k.x + 5, top, k.width - 10, 22);
-  // Visor slit
-  ctx.fillStyle = "#222";
-  const visorX = k.facing === 1 ? k.x + k.width - 18 : k.x + 8;
-  ctx.fillRect(visorX, top + 8, 10, 4);
-
-  // Sword: sticks out while attacking, held up otherwise
-  ctx.fillStyle = "#ddd";
+  // Sword: swung forward while attacking, held up and ready otherwise
+  const hand = mid + front * 14;
   if (k.attackTimer > 0) {
-    const s = swordBox(k);
-    ctx.fillRect(s.x, s.y, s.width, 6);
+    const swing = (k.attackTimer / 12) * 0.9;   // sweeps down through the swing
+    drawSword(hand, top + 30, front === 1 ? -swing + 0.2 : Math.PI + swing - 0.2);
   } else {
-    const handX = k.facing === 1 ? k.x + k.width - 4 : k.x;
-    ctx.fillRect(handX, top + 5, 4, 35);
+    drawSword(hand, top + 34, front === 1 ? -1.25 : Math.PI + 1.25);
   }
+  // Hand in a steel glove
+  ctx.fillStyle = "#aeb6bf";
+  ctx.beginPath();
+  ctx.arc(hand, top + 32, 5, 0, Math.PI * 2);
+  ctx.fill();
 
-  // Shield while blocking
-  if (k.blocking) {
-    ctx.fillStyle = "#8b5a2b";
-    const shieldX = k.facing === 1 ? k.x + k.width : k.x - 10;
-    ctx.fillRect(shieldX, top + 20, 10, 40);
+  if (k.blocking) drawShield(mid + front * 22, top + 16, k.color, true);
+}
+
+function drawBar(x, y, w, h, fraction, colorA, colorB) {
+  ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+  roundRect(x - 2, y - 2, w + 4, h + 4, h / 2 + 2);
+  if (fraction > 0) {
+    const fill = ctx.createLinearGradient(0, y, 0, y + h);
+    fill.addColorStop(0, colorA);
+    fill.addColorStop(1, colorB);
+    ctx.fillStyle = fill;
+    roundRect(x, y, Math.max(h, w * fraction), h, h / 2);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.25)";   // shine on top
+    roundRect(x + 3, y + 2, Math.max(h, w * fraction) - 6, h / 3, h / 6);
   }
 }
 
 function drawHealthBar(k, x, label) {
   const w = 400;
-  ctx.fillStyle = "#333";
-  ctx.fillRect(x, 20, w, 30);
-  ctx.fillStyle = k.health > 30 ? "#2ecc71" : "#e74c3c";
-  ctx.fillRect(x, 20, w * Math.max(0, k.health) / MAX_HEALTH, 30);
-  ctx.strokeStyle = "#000";
-  ctx.strokeRect(x, 20, w, 30);
-  ctx.fillStyle = "#000";
-  ctx.font = "28px sans-serif";
+  const health = Math.max(0, k.health) / MAX_HEALTH;
+  if (k.health > 30) drawBar(x, 20, w, 30, health, "#5ef08a", "#1e9e4f");
+  else drawBar(x, 20, w, 30, health, "#ff7a6b", "#c0261a");
+  ctx.font = "bold 28px sans-serif";
   ctx.textAlign = "left";
+  ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+  ctx.fillText(label, x + 2, 87);
+  ctx.fillStyle = "#fff";
   ctx.fillText(label, x, 85);
 
   // Fireball cooldown bar: fills up while recharging
   const ready = 1 - k.fireCooldown / FIREBALL_COOLDOWN;
-  ctx.fillStyle = "#333";
-  ctx.fillRect(x + 130, 64, 160, 14);
-  ctx.fillStyle = ready === 1 ? "#ff6a00" : "#996633";
-  ctx.fillRect(x + 130, 64, 160 * ready, 14);
+  drawBar(x + 230, 64, 170, 14, ready, ready === 1 ? "#ffcf4a" : "#c98a3a", ready === 1 ? "#ff6a00" : "#8a5a2a");
 
   // Stamina bar: yellow, or grey while tired
-  ctx.fillStyle = "#333";
-  ctx.fillRect(x, 95, w, 12);
-  ctx.fillStyle = k.tired ? "#888" : "#f1c40f";
-  ctx.fillRect(x, 95, w * k.stamina / MAX_STAMINA, 12);
+  if (k.tired) drawBar(x, 98, w, 10, k.stamina / MAX_STAMINA, "#bbb", "#777");
+  else drawBar(x, 98, w, 10, k.stamina / MAX_STAMINA, "#fff07a", "#e0b000");
+}
+
+// ---------- Background ----------
+// Things that never move (sky, mountains, ground, platforms) are drawn once into hidden canvases,
+// then copied to the screen every frame. That is much faster than drawing them again each time.
+function makeLayer(draw) {
+  const layer = document.createElement("canvas");
+  layer.width = canvas.width;
+  layer.height = canvas.height;
+  draw(layer.getContext("2d"));
+  return layer;
+}
+
+// Same random numbers every time, so the background looks the same on every computer
+function seededRandom(seed) {
+  return () => {
+    seed = (seed * 16807) % 2147483647;
+    return seed / 2147483647;
+  };
+}
+
+function drawMountains(g, baseY, height, color, seed) {
+  const rand = seededRandom(seed);
+  g.fillStyle = color;
+  g.beginPath();
+  g.moveTo(0, baseY);
+  for (let x = 0; x <= canvas.width + 100; x += 100) {
+    g.lineTo(x, baseY - height * (0.4 + rand() * 0.6));
+    g.lineTo(x + 50, baseY - height * (0.2 + rand() * 0.5));
+  }
+  g.lineTo(canvas.width, baseY);
+  g.closePath();
+  g.fill();
+}
+
+const skyLayer = makeLayer(g => {
+  // Sky that gets lighter towards the horizon
+  const sky = g.createLinearGradient(0, 0, 0, GROUND);
+  sky.addColorStop(0, "#3d8ad6");
+  sky.addColorStop(1, "#c4e8f7");
+  g.fillStyle = sky;
+  g.fillRect(0, 0, canvas.width, GROUND);
+  // Sun with a warm glow
+  const sun = g.createRadialGradient(1250, 220, 10, 1250, 220, 160);
+  sun.addColorStop(0, "rgba(255, 252, 220, 1)");
+  sun.addColorStop(0.25, "rgba(255, 240, 170, 0.9)");
+  sun.addColorStop(1, "rgba(255, 240, 170, 0)");
+  g.fillStyle = sun;
+  g.fillRect(1090, 60, 320, 320);
+  // Far mountains, then nearer and darker ones
+  drawMountains(g, GROUND, 380, "rgba(120, 150, 190, 0.55)", 7);
+  drawMountains(g, GROUND, 250, "rgba(80, 120, 110, 0.7)", 3);
+  // A castle far away
+  g.fillStyle = "rgba(70, 90, 110, 0.6)";
+  g.fillRect(700, GROUND - 260, 200, 260);
+  for (let x = 700; x < 900; x += 25) g.fillRect(x, GROUND - 275, 14, 15);
+  g.fillRect(670, GROUND - 330, 50, 330);
+  g.fillRect(880, GROUND - 330, 50, 330);
+  g.beginPath();
+  g.moveTo(665, GROUND - 330); g.lineTo(695, GROUND - 380); g.lineTo(725, GROUND - 330);
+  g.moveTo(875, GROUND - 330); g.lineTo(905, GROUND - 380); g.lineTo(935, GROUND - 330);
+  g.fill();
+  // Grass on top, dark soil below, with little grass tufts
+  const ground = g.createLinearGradient(0, GROUND, 0, canvas.height);
+  ground.addColorStop(0, "#5fae3c");
+  ground.addColorStop(0.25, "#3f7f2a");
+  ground.addColorStop(0.3, "#6b4a2b");
+  ground.addColorStop(1, "#3e2a17");
+  g.fillStyle = ground;
+  g.fillRect(0, GROUND, canvas.width, canvas.height - GROUND);
+  const rand = seededRandom(11);
+  g.fillStyle = "#7cc94f";
+  for (let i = 0; i < 260; i++) {
+    const x = rand() * canvas.width;
+    g.fillRect(x, GROUND - 4 - rand() * 4, 2, 8);
+  }
+});
+
+const platformLayer = makeLayer(g => {
+  for (const p of platforms) {
+    // Shadow under the platform
+    g.fillStyle = "rgba(0, 0, 0, 0.18)";
+    g.fillRect(p.x + 6, p.y + 14, p.width - 6, 8);
+    // Stone blocks
+    const stone = g.createLinearGradient(0, p.y, 0, p.y + 18);
+    stone.addColorStop(0, "#a39a8c");
+    stone.addColorStop(1, "#6d665c");
+    g.fillStyle = stone;
+    g.fillRect(p.x, p.y, p.width, 18);
+    g.fillStyle = "rgba(0, 0, 0, 0.25)";
+    for (let x = p.x + 30; x < p.x + p.width; x += 30) g.fillRect(x, p.y + 4, 2, 14);
+    g.fillRect(p.x, p.y + 17, p.width, 1);
+    // Mossy grass on top
+    g.fillStyle = "#5fae3c";
+    g.fillRect(p.x - 2, p.y - 2, p.width + 4, 6);
+    g.fillStyle = "#7cc94f";
+    for (let x = p.x; x < p.x + p.width; x += 9) g.fillRect(x, p.y - 4, 2, 4);
+  }
+});
+
+const clouds = [
+  { x: 150, y: 160, size: 1.2, speed: 0.15 },
+  { x: 650, y: 110, size: 0.9, speed: 0.1 },
+  { x: 1100, y: 190, size: 1.4, speed: 0.2 },
+  { x: 1450, y: 90, size: 0.8, speed: 0.12 }
+];
+
+function drawCloud(c) {
+  const x = (c.x + frame * c.speed) % (canvas.width + 300) - 150;
+  ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+  ctx.beginPath();
+  ctx.arc(x, c.y, 30 * c.size, 0, Math.PI * 2);
+  ctx.arc(x + 35 * c.size, c.y - 15 * c.size, 38 * c.size, 0, Math.PI * 2);
+  ctx.arc(x + 75 * c.size, c.y, 30 * c.size, 0, Math.PI * 2);
+  ctx.rect(x, c.y, 75 * c.size, 30 * c.size);
+  ctx.fill();   // one fill for the whole cloud, so the see-through parts don't overlap
+}
+
+function drawWaterfall(w) {
+  const h = GROUND - w.top;
+  const water = ctx.createLinearGradient(w.x, 0, w.x + WATERFALL_WIDTH, 0);
+  water.addColorStop(0, "rgba(30, 100, 200, 0.85)");
+  water.addColorStop(0.5, "rgba(90, 170, 240, 0.85)");
+  water.addColorStop(1, "rgba(30, 100, 200, 0.85)");
+  ctx.fillStyle = water;
+  ctx.fillRect(w.x, w.top, WATERFALL_WIDTH, h);
+  // Foam streaks rushing down
+  for (let i = 0; i < 4; i++) {
+    const lane = w.x + 6 + i * 11;
+    ctx.fillStyle = "rgba(255, 255, 255, " + (0.35 + (i % 2) * 0.2) + ")";
+    for (let y = w.top + ((frame * (4 + i)) + i * 13) % 50; y < GROUND - 10; y += 50) {
+      ctx.fillRect(lane, y, 3, 24);
+    }
+  }
+  // Splash and mist where it hits the ground
+  ctx.fillStyle = "rgba(255, 255, 255, 0.55)";
+  for (let i = 0; i < 4; i++) {
+    const r = 8 + ((frame + i * 6) % 24) / 2;
+    ctx.beginPath();
+    ctx.arc(w.x + 8 + i * 12, GROUND - 2, r, Math.PI, 0);
+    ctx.fill();
+  }
+}
+
+function drawLava(pit) {
+  // Glow rising above the lava
+  const glow = ctx.createLinearGradient(0, GROUND - 120, 0, GROUND);
+  glow.addColorStop(0, "rgba(255, 120, 0, 0)");
+  glow.addColorStop(1, "rgba(255, 120, 0, " + (0.35 + Math.sin(frame * 0.06 + pit.x) * 0.1) + ")");
+  ctx.fillStyle = glow;
+  ctx.fillRect(pit.x - 20, GROUND - 120, pit.width + 40, 120);
+  const lava = ctx.createLinearGradient(0, GROUND, 0, canvas.height);
+  lava.addColorStop(0, "#ffe066");
+  lava.addColorStop(0.2, "#ff8a00");
+  lava.addColorStop(1, "#a01c00");
+  ctx.fillStyle = lava;
+  ctx.fillRect(pit.x, GROUND, pit.width, canvas.height - GROUND);
+  // Bubbles that grow and pop
+  for (let i = 0; i < 3; i++) {
+    const life = (frame + i * 40 + pit.x) % 120;
+    const r = life / 20;
+    ctx.fillStyle = "rgba(255, 230, 120, " + (1 - life / 120) + ")";
+    ctx.beginPath();
+    ctx.arc(pit.x + 15 + i * 25, GROUND + 6 - life / 30, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
 }
 
 function loop() {
@@ -1411,36 +1761,13 @@ function loop() {
   if (started && onlineRole === "host" && frame % 2 === 0) sendState();
   if (started && isGuest) sendInput();
 
-  // Draw
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.fillStyle = "#5a8f3c";
-  ctx.fillRect(0, GROUND, canvas.width, canvas.height - GROUND);
-
-  // Waterfalls with white streaks moving down
+  // Draw: sky and ground, clouds, waterfalls, lava, platforms, then everything that moves
   frame++;
-  for (const w of waterfalls) {
-    ctx.fillStyle = "rgba(40, 120, 220, 0.75)";
-    ctx.fillRect(w.x, w.top, WATERFALL_WIDTH, GROUND - w.top);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.5)";
-    for (let y = w.top + (frame * 3) % 40; y < GROUND - 20; y += 40) {
-      ctx.fillRect(w.x + 12, y, 4, 20);
-      ctx.fillRect(w.x + 32, y + 15, 4, 20);
-    }
-  }
-
-  for (const pit of lavaPits) {
-    ctx.fillStyle = "#e8480c";
-    ctx.fillRect(pit.x, GROUND, pit.width, canvas.height - GROUND);
-    ctx.fillStyle = "#ffb000";
-    ctx.fillRect(pit.x, GROUND, pit.width, 5);
-  }
-
-  for (const p of platforms) {
-    ctx.fillStyle = "#8b5a2b";
-    ctx.fillRect(p.x, p.y, p.width, 14);
-    ctx.fillStyle = "#5a8f3c";
-    ctx.fillRect(p.x, p.y, p.width, 4);
-  }
+  ctx.drawImage(skyLayer, 0, 0);
+  clouds.forEach(drawCloud);
+  waterfalls.forEach(drawWaterfall);
+  lavaPits.forEach(drawLava);
+  ctx.drawImage(platformLayer, 0, 0);
 
   hearts.forEach(drawHeart);
   drawKnight(p1);
@@ -1454,11 +1781,17 @@ function loop() {
   if (winner) {
     ctx.fillStyle = "rgba(0,0,0,0.6)";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
-    ctx.fillStyle = "#fff";
-    ctx.font = "96px sans-serif";
     ctx.textAlign = "center";
+    ctx.font = "bold 96px sans-serif";
+    ctx.fillStyle = "rgba(0, 0, 0, 0.6)";
+    ctx.fillText(winner + " wins!", canvas.width / 2 + 4, canvas.height / 2 + 4);
+    const gold = ctx.createLinearGradient(0, canvas.height / 2 - 80, 0, canvas.height / 2);
+    gold.addColorStop(0, "#fff3b0");
+    gold.addColorStop(1, "#f1b000");
+    ctx.fillStyle = gold;
     ctx.fillText(winner + " wins!", canvas.width / 2, canvas.height / 2);
     ctx.font = "40px sans-serif";
+    ctx.fillStyle = "#fff";
     ctx.fillText("Press R to play again", canvas.width / 2, canvas.height / 2 + 80);
   }
 
