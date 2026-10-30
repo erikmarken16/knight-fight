@@ -48,6 +48,17 @@
     .right .touchButton { border-color: rgba(52, 152, 219, 0.9); }
     .touchButton:active { background: rgba(255, 255, 255, 0.4); }
     #touchTop { position: absolute; top: 6px; left: 50%; transform: translateX(-50%); display: flex; gap: 8px; }
+    /* Online touch buttons: one player per phone, so big buttons like most mobile fighting games.
+       Moving on the left thumb, jump and attacks in a fan on the right thumb. */
+    .onlinePad { display: none; position: absolute; bottom: 12px; }
+    .onlinePad.move { left: 12px; gap: 10px; align-items: flex-end; }
+    .onlinePad.actions { right: 12px; width: 200px; height: 180px; }
+    .onlinePad .touchButton { width: 70px; height: 70px; font-size: 30px; border-color: rgba(255, 255, 255, 0.8); }
+    .onlinePad.actions .touchButton { position: absolute; }
+    .onlinePad .attack { right: 0; bottom: 0; width: 92px; height: 92px; font-size: 40px; }
+    .onlinePad .jump { right: 102px; bottom: 0; }
+    .onlinePad .fire { right: 10px; bottom: 102px; }
+    .onlinePad .sprint { right: 94px; bottom: 86px; width: 58px; height: 58px; font-size: 24px; }
     #rotateHint { display: none; }
     @media (pointer: coarse) {
       /* On phones and tablets: use the whole screen and smaller menus */
@@ -850,13 +861,34 @@ const touchTop = document.createElement("div");
 touchTop.id = "touchTop";
 touchTop.append(tapButton("↻", restartGame), tapButton("☰", showMenu));
 if (fullscreenSupported) touchTop.append(tapButton("⛶", toggleFullscreen));
+// Online you control one knight, so you get bigger buttons in the usual mobile fighting game layout.
+// localInput() reads both key sets, so these buttons work for the red and the blue knight.
+function makeOnlineTouchPads() {
+  const c = P1_CONTROLS;
+  const move = document.createElement("div");
+  move.className = "onlinePad move";
+  move.append(holdKey("◀", c.left), holdKey("▼", c.down), holdKey("▶", c.right));
+  const actions = document.createElement("div");
+  actions.className = "onlinePad actions";
+  const placed = (button, place) => { button.classList.add(place); return button; };
+  actions.append(placed(holdKey("⚔", c.attack), "attack"), placed(holdKey("▲", c.up), "jump"),
+                 placed(holdKey("🔥", c.fire), "fire"), placed(holdKey("»", c.sprint), "sprint"));
+  return [move, actions];
+}
+
+const leftTouchPad = makeTouchPad(P1_CONTROLS, "left");
 const rightTouchPad = makeTouchPad(P2_CONTROLS, "right");
-touchControls.append(makeTouchPad(P1_CONTROLS, "left"), rightTouchPad, touchTop);
+const onlineTouchPads = makeOnlineTouchPads();
+touchControls.append(leftTouchPad, rightTouchPad, ...onlineTouchPads, touchTop);
 
 function updateTouchControls() {
   const isTouch = matchMedia("(pointer: coarse)").matches;
   touchControls.style.display = isTouch && started ? "block" : "none";
-  rightTouchPad.style.display = onlineRole ? "none" : "flex";  // online you only need one set of buttons
+  // Two players on one phone get a small pad each; online you get the big one-player layout
+  leftTouchPad.style.display = onlineRole ? "none" : "flex";
+  rightTouchPad.style.display = onlineRole ? "none" : "flex";
+  onlineTouchPads[0].style.display = onlineRole ? "flex" : "none";
+  onlineTouchPads[1].style.display = onlineRole ? "block" : "none";
   if (!started) for (const k in keys) keys[k] = false;  // let go of every button
 }
 
