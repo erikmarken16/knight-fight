@@ -3,6 +3,9 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <!-- Full screen without the address bar when added to the home screen -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Knight Fight</title>
   <!-- PeerJS connects two players' browsers to each other for online games -->
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
@@ -48,7 +51,9 @@
       /* On phones and tablets: use the whole screen and smaller menus */
       body { overflow: hidden; }
       body > p { display: none; }
-      #wrap { margin: 0 auto; width: min(100vw, 100vh * 1.6); }
+      /* dvh is the part of the screen you can actually see, without the browser's address bar */
+      /* (the 8px is the canvas border, which doesn't stretch with the picture) */
+      #wrap { margin: 0 auto; width: min(100vw, (100vh - 8px) * 1.6 + 8px); width: min(100vw, (100dvh - 8px) * 1.6 + 8px); }
       .menu { gap: 8px; }
       .menu h1 { font-size: 28px; margin: 0; }
       .menu button { font-size: 16px; padding: 8px 16px; min-width: 240px; }
@@ -533,6 +538,7 @@ document.getElementById("loginConfirm").addEventListener("click", confirmLogin);
 document.getElementById("loginBack").addEventListener("click", closeLoginForm);
 
 function startOneComputer() {
+  fullscreenOnPhone();
   reset();
   menu.style.display = "none";
   menuNote.textContent = "";
@@ -597,6 +603,7 @@ function onlineAvailable() {
 
 function createGame() {
   if (!onlineAvailable()) return;
+  fullscreenOnPhone();
   leaveOnline();
   const code = makeCode();
   onlineNote.textContent = "Creating a game...";
@@ -621,6 +628,7 @@ function joinGame() {
     onlineNote.textContent = "Type your friend's 4 letter code.";
     return;
   }
+  fullscreenOnPhone();
   leaveOnline();
   onlineNote.textContent = "Joining " + code + "...";
   peer = new Peer();
@@ -786,9 +794,27 @@ function tapButton(label, onTap) {
   return button;
 }
 
+// Full screen hides the browser's address bar. iPhones don't allow it, so the button only shows where it works.
+function toggleFullscreen() {
+  if (document.fullscreenElement) {
+    document.exitFullscreen();
+    return;
+  }
+  document.documentElement.requestFullscreen()
+    .then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape"))
+    .catch(() => {});  // the phone said no, keep playing as before
+}
+
+// On phones, go full screen when a game starts (it only works right after a tap)
+function fullscreenOnPhone() {
+  const isTouch = matchMedia("(pointer: coarse)").matches;
+  if (isTouch && document.fullscreenEnabled && !document.fullscreenElement) toggleFullscreen();
+}
+
 const touchTop = document.createElement("div");
 touchTop.id = "touchTop";
 touchTop.append(tapButton("↻", restartGame), tapButton("☰", showMenu));
+if (document.fullscreenEnabled) touchTop.append(tapButton("⛶", toggleFullscreen));
 const rightTouchPad = makeTouchPad(P2_CONTROLS, "right");
 touchControls.append(makeTouchPad(P1_CONTROLS, "left"), rightTouchPad, touchTop);
 
