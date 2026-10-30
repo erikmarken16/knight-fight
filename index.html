@@ -11,6 +11,8 @@
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
   <style>
     body { margin: 0; background: #222; color: #eee; font-family: sans-serif; text-align: center; }
+    /* No zooming when you tap quickly twice (Safari ignores user-scalable=no) */
+    html { touch-action: manipulation; -webkit-text-size-adjust: 100%; }
     /* The arena is 1600x1000; shrink it to fit the window */
     #wrap { position: relative; margin: 10px auto; width: min(96vw, calc((100vh - 130px) * 1.6)); }
     canvas { background: #87ceeb; display: block; width: 100%; height: auto; border: 4px solid #444; box-sizing: border-box; }
@@ -794,27 +796,60 @@ function tapButton(label, onTap) {
   return button;
 }
 
-// Full screen hides the browser's address bar. iPhones don't allow it, so the button only shows where it works.
+// Full screen hides the browser's address bar. Safari uses its own "webkit" names for it,
+// and iPhones don't allow it at all, so the button only shows where it works.
+const fullscreenSupported = document.fullscreenEnabled || document.webkitFullscreenEnabled;
+
+function inFullscreen() {
+  return document.fullscreenElement || document.webkitFullscreenElement;
+}
+
 function toggleFullscreen() {
-  if (document.fullscreenElement) {
-    document.exitFullscreen();
-    return;
-  }
-  document.documentElement.requestFullscreen()
-    .then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape"))
-    .catch(() => {});  // the phone said no, keep playing as before
+  try {
+    if (inFullscreen()) {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+      return;
+    }
+    const page = document.documentElement;
+    const asked = (page.requestFullscreen || page.webkitRequestFullscreen).call(page);
+    Promise.resolve(asked)   // older Safari doesn't give back a promise
+      .then(() => screen.orientation && screen.orientation.lock && screen.orientation.lock("landscape"))
+      .catch(() => {});      // the phone said no, keep playing as before
+  } catch (e) {}
 }
 
 // On phones, go full screen when a game starts (it only works right after a tap)
 function fullscreenOnPhone() {
   const isTouch = matchMedia("(pointer: coarse)").matches;
-  if (isTouch && document.fullscreenEnabled && !document.fullscreenElement) toggleFullscreen();
+  if (isTouch && fullscreenSupported && !inFullscreen()) toggleFullscreen();
 }
+
+// Make the arena fit the part of the screen you can see. CSS does this too, but Safari
+// (especially on older iPhones) gets the height wrong, so on phones we measure it here.
+const wrap = document.getElementById("wrap");
+
+function fitToScreen() {
+  if (!matchMedia("(pointer: coarse)").matches) {
+    wrap.style.width = "";   // computers: the CSS size is fine
+    return;
+  }
+  const view = window.visualViewport || { width: innerWidth, height: innerHeight };
+  // 1.6 is the arena's width/height, 8px is the canvas border
+  wrap.style.width = Math.min(view.width, (view.height - 8) * 1.6 + 8) + "px";
+}
+
+addEventListener("resize", fitToScreen);
+addEventListener("orientationchange", () => setTimeout(fitToScreen, 300));  // Safari reports the new size late
+if (window.visualViewport) visualViewport.addEventListener("resize", fitToScreen);
+fitToScreen();
+
+// Safari ignores "user-scalable=no", so stop pinching from zooming the page
+document.addEventListener("gesturestart", e => e.preventDefault());
 
 const touchTop = document.createElement("div");
 touchTop.id = "touchTop";
 touchTop.append(tapButton("↻", restartGame), tapButton("☰", showMenu));
-if (document.fullscreenEnabled) touchTop.append(tapButton("⛶", toggleFullscreen));
+if (fullscreenSupported) touchTop.append(tapButton("⛶", toggleFullscreen));
 const rightTouchPad = makeTouchPad(P2_CONTROLS, "right");
 touchControls.append(makeTouchPad(P1_CONTROLS, "left"), rightTouchPad, touchTop);
 
