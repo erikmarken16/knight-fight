@@ -6,6 +6,9 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <title>Knight Fight 3D</title>
+  <!-- For online games: PeerJS connects directly, MQTT (HiveMQ) is the backup route -->
+  <script async src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+  <script async src="https://unpkg.com/mqtt@5.10.1/dist/mqtt.min.js"></script>
   <style>
     body { margin: 0; overflow: hidden; background: #111; color: #fff; font-family: sans-serif; }
     canvas { display: block; }
@@ -43,6 +46,14 @@
                 color: #ff4a3a; text-shadow: 2px 2px 3px #000; opacity: 0; transition: opacity 0.2s; }
     #mouseHint { position: absolute; left: 50%; top: 60%; transform: translateX(-50%); display: flex;
                  padding: 10px 18px; border-radius: 10px; background: rgba(0, 0, 0, 0.55); font-size: 18px; white-space: nowrap; }
+    /* Online: one fighter on this screen, so the HUD and touch controls use the whole width */
+    .hud.solo { width: 100%; }
+    .touchHalf.solo { width: 100%; left: 0; right: auto; }
+    #waiting { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
+               background: rgba(0, 0, 0, 0.65); text-align: center; padding: 20px; z-index: 5; }
+    #waiting h1 { font-size: 64px; margin: 0 0 10px; color: #ffd84d; letter-spacing: 6px; text-shadow: 3px 3px 4px #000; }
+    #waiting p { font-size: 22px; max-width: 700px; margin: 6px; }
+    #waiting .small { font-size: 16px; opacity: 0.7; }
     #divider { position: fixed; top: 0; left: 50%; width: 4px; height: 100%; margin-left: -2px; background: #111; }
     #help { position: fixed; bottom: 8px; width: 100%; text-align: center; font-size: 14px; text-shadow: 1px 1px 2px #000; }
     #message { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
@@ -122,6 +133,7 @@
   <div id="touch"></div>
   <div id="turnPhone">Turn your phone sideways to play</div>
   <div id="loading">Building the battlefield...</div>
+  <div id="waiting"><h1></h1><p></p><p class="small">Esc (or ☰) for the menu</p></div>
 
 <!-- three.js draws the 3D world. The import map tells the browser where "three" is. -->
 <script type="importmap">
@@ -177,6 +189,12 @@ const TEXTURE_SIZE = isPhone ? 256 : 512;
 
 // Which 3D game: "castle" (knights with swords and fireballs) or "modern" (soldiers with rifles and grenades)
 const MODE = new URLSearchParams(location.search).get("mode") === "modern" ? "modern" : "castle";
+// Online: "host" (made the code, runs the game, is red) or "guest" (joined with the code, is blue). Empty = both on this device.
+const urlParams = new URLSearchParams(location.search);
+const ONLINE = ["host", "guest"].includes(urlParams.get("online")) ? urlParams.get("online") : null;
+const LOCAL = ONLINE === "guest" ? 1 : 0;      // the fighter controlled on this device (when online)
+const VIEWS = ONLINE ? [LOCAL] : [0, 1];       // which fighters' eyes are drawn on this screen
+const MY_NAME = (urlParams.get("name") || "").slice(0, 20);
 const CASTLE = MODE === "castle";
 
 // Modern weapons
@@ -198,7 +216,7 @@ if (!CASTLE) CONTROLS[0].fire2 = "KeyG";
 const keys = {};
 addEventListener("keydown", e => {
   keys[e.code] = true;
-  if (e.code === "KeyR") restart();
+  if (e.code === "KeyR") restartGame();
   // Esc first lets go of the mouse; only go to the menu if the mouse wasn't just let go
   if (e.code === "Escape" && !document.pointerLockElement && performance.now() - mouseReleasedAt > 500) location.href = "index.html";
   // Stop space, arrows and "/" from scrolling the page or opening quick find
@@ -228,7 +246,7 @@ addEventListener("mouseup", e => { keys["Mouse" + e.button] = false; });
 addEventListener("contextmenu", e => e.preventDefault());   // right click is the fireball, not a menu
 addEventListener("mousemove", e => {
   if (!mouseLocked()) return;
-  const p = players[0];
+  const p = players[LOCAL];
   const speed = MOUSE_SPEED * (1 - 0.6 * (p.aim || 0));   // slower while looking through the scope
   p.yaw -= e.movementX * speed;
   p.pitch = Math.max(-1.2, Math.min(1.2, p.pitch - e.movementY * speed));
@@ -266,11 +284,11 @@ function holdKey(label, code) {
 const TOUCH_LOOK_SPEED = 0.006;
 const STICK_RADIUS = 50;
 
-function makeTouchHalf(index) {
-  const c = CONTROLS[index];
-  const outer = index === 0 ? "left" : "right";
+// index: which fighter it controls. layout: 0 = joystick on the left, 1 = mirrored. c: which "keys" it presses.
+function makeTouchHalf(index, layout = index, c = CONTROLS[index]) {
+  const outer = layout === 0 ? "left" : "right";
   const half = document.createElement("div");
-  half.className = "touchHalf p" + (index + 1);
+  half.className = "touchHalf p" + (layout + 1) + (ONLINE ? " solo" : "");
   const base = document.createElement("div");
   base.className = "stickBase";
   const knob = document.createElement("div");
@@ -280,7 +298,7 @@ function makeTouchHalf(index) {
   // Where the joystick rests when nobody is touching it (faded), like in Roblox
   const restBase = () => {
     base.classList.remove("active");
-    base.style.left = (index === 0 ? 95 : half.clientWidth - 95) + "px";
+    base.style.left = (layout === 0 ? 95 : half.clientWidth - 95) + "px";
     base.style.top = (half.clientHeight - 95) + "px";
     knob.style.transform = "";
   };
@@ -288,7 +306,7 @@ function makeTouchHalf(index) {
   // The buttons, placed in an arc. Positions are measured from the inner bottom corner of the half.
   const btns = document.createElement("div");
   btns.className = "btns";
-  const inner = index === 0 ? "right" : "left";
+  const inner = layout === 0 ? "right" : "left";
   const place = (button, along, up, big) => {
     if (big) button.classList.add("big");
     button.style[inner] = along + "px";
@@ -371,9 +389,10 @@ const touchArea = document.getElementById("touch");
 const topButtons = document.createElement("div");
 topButtons.id = "topButtons";
 const tapButton = (label, onTap) => { const b = touchButton(label, () => {}); b.addEventListener("click", onTap); return b; };
-topButtons.append(tapButton("↻", () => restart()), tapButton("☰", () => { location.href = "index.html"; }));
+topButtons.append(tapButton("↻", () => restartGame()), tapButton("☰", () => { location.href = "index.html"; }));
 if (document.fullscreenEnabled || document.webkitFullscreenEnabled) topButtons.append(tapButton("⛶", toggleFullscreen));
-touchArea.append(makeTouchHalf(0), makeTouchHalf(1), topButtons);
+if (ONLINE) touchArea.append(makeTouchHalf(LOCAL, 0, CONTROLS[0]), topButtons);
+else touchArea.append(makeTouchHalf(0), makeTouchHalf(1), topButtons);
 document.addEventListener("gesturestart", e => e.preventDefault());   // no pinch zoom in Safari
 
 // ---------- Renderer ----------
@@ -1485,6 +1504,7 @@ const holeScale = new THREE.Vector3();
 const facing = new THREE.Vector3(0, 0, 1);
 
 function addBulletHole(point, normal) {
+  if (ONLINE === "host") netFx.push(["h", r2(point.x), r2(point.y), r2(point.z), normal.x, normal.y, normal.z]);
   holeQuaternion.setFromUnitVectors(facing, normal);
   holeScale.setScalar(0.7 + Math.random() * 0.6);
   const m = new THREE.Matrix4().compose(point.clone().addScaledVector(normal, 0.01), holeQuaternion, holeScale);
@@ -1519,6 +1539,7 @@ let splats = [];
 
 // Spray blood from a point, mostly in the direction the hit was going
 function bleed(x, y, z, dirX, dirZ, amount) {
+  if (ONLINE === "host") netFx.push(["b", r2(x), r2(y), r2(z), r2(dirX), r2(dirZ), amount]);
   for (let i = 0; i < amount && drops.length < DROP_MAX; i++) {
     const speed = 1.5 + Math.random() * 3.5;
     drops.push({
@@ -1956,17 +1977,27 @@ for (let i = 0; i < 2; i++) {
   players.push({
     camera, model,
     viewSword: CASTLE ? makeViewSword(camera, 3 + i) : makeViewRifle(camera, 3 + i),
-    controls: CONTROLS[i],
+    // Online, whoever plays on this device uses player 1's keys (WASD and the mouse)
+    controls: ONLINE ? (i === LOCAL ? CONTROLS[0] : CONTROLS[1]) : CONTROLS[i],
     hud: document.getElementById("hud" + (i + 1)),
     name: "Player " + (i + 1)
   });
+}
+if (ONLINE) {
+  players.forEach((p, i) => {
+    if (i === LOCAL) p.hud.classList.add("solo");
+    else p.hud.style.display = "none";
+  });
+  document.getElementById("divider").style.display = "none";
+  document.getElementById("mouseHint").textContent = "Click here to play with the mouse";
 }
 
 // Show the name player 1 logged in with in the 2D game's menu
 try {
   const saved = localStorage.getItem("knightFightUsername");
-  if (saved) players[0].name = saved;
+  if (saved && !ONLINE) players[0].name = saved;
 } catch (e) {}
+if (ONLINE && MY_NAME) players[LOCAL].name = MY_NAME;
 players.forEach(p => { p.hud.querySelector(".name").textContent = p.name; });
 document.getElementById("mouseHint").style.display = isPhone ? "none" : "flex";
 document.getElementById("help").innerHTML = CASTLE
@@ -1977,9 +2008,17 @@ document.getElementById("help").innerHTML = CASTLE
     "Player 2: ↑ ↓ walk, ← → turn, Enter shoot, . scope (on/off), , crouch, ' sprint, Right Shift grenade, - jump &nbsp;|&nbsp; " +
     "Aim for the head! &nbsp;|&nbsp; R restart, Esc menu";
 if (CASTLE) document.querySelectorAll(".ammo, .headshot, .scope").forEach(e => e.remove());
+if (ONLINE) {
+  // Only this player's keys matter online
+  document.getElementById("help").innerHTML = (CASTLE
+    ? "W A S D move, mouse look, left click sword, right click or E fireball, Space jump, Left Shift sprint"
+    : "W A S D move, mouse look, left click shoot, right click scope (on/off), C crouch, Left Shift sprint, E or G grenade, Space jump") +
+    " &nbsp;|&nbsp; You are " + (LOCAL === 0 ? "red" : "blue") + " &nbsp;|&nbsp; Esc menu";
+}
 
 // ---------- Hearts, fireballs and explosions ----------
 let hearts = [];
+let netFx = [];   // online host: effects that happened since the last update sent to the guest
 let fireballs = [];
 let explosions = [];
 let heartTimer = HEART_EVERY;
@@ -2023,11 +2062,15 @@ function spawnHeart() {
     x = (Math.random() * 2 - 1) * (ARENA - 2);
     z = (Math.random() * 2 - 1) * (ARENA - 2);
   } while (!freeSpot(x, z, 0.6));
+  hearts.push(makePickup(x, z));
+}
+
+function makePickup(x, z) {
   const mesh = CASTLE ? new THREE.Mesh(heartGeometry, heartMaterial) : makeMedkit();
   mesh.position.set(x, 0.9, z);
   mesh.castShadow = true;
   scene.add(mesh);
-  hearts.push(mesh);
+  return mesh;
 }
 
 // Colors brighter than white (values above 1) are what the glow effect picks up
@@ -2040,15 +2083,21 @@ function forwardOf(p) {
 
 function shootFireball(p) {
   const dir = forwardOf(p);
-  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), fireballCore);
-  mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 12), fireballGlow));
-  mesh.add(new THREE.PointLight("#ff8a2a", 25, 9, 1.5));
+  const mesh = makeFireballMesh();
   mesh.position.set(p.x + dir.x * 0.8, p.y + 1.4, p.z + dir.z * 0.8);
-  scene.add(mesh);
   fireballs.push({ mesh, dir, owner: p, life: 3 });
 }
 
+function makeFireballMesh() {
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.2, 16, 12), fireballCore);
+  mesh.add(new THREE.Mesh(new THREE.SphereGeometry(0.42, 16, 12), fireballGlow));
+  mesh.add(new THREE.PointLight("#ff8a2a", 25, 9, 1.5));
+  scene.add(mesh);
+  return mesh;
+}
+
 function explode(position, big = true) {
+  if (ONLINE === "host") netFx.push(["x", r2(position.x), r2(position.y), r2(position.z), big]);
   const mesh = new THREE.Mesh(new THREE.SphereGeometry(0.4, 20, 14),
     new THREE.MeshBasicMaterial({ color: "#ffb347", transparent: true, toneMapped: false }));
   mesh.position.copy(position);
@@ -2083,7 +2132,7 @@ function eyeHeight(p) {
 // Players with the mouse aim exactly. Everyone else (arrow keys, touch) gets help aiming up or down
 // at the other soldier when they are roughly in front.
 function aimPitch(p, other) {
-  if (p === players[0] && mouseLocked()) return p.pitch;
+  if (usesMouse(p)) return p.pitch;
   const dx = other.x - p.x, dz = other.z - p.z, dist = Math.hypot(dx, dz);
   const dir = forwardOf(p);
   if (!other.dead && (dx * dir.x + dz * dir.z) / (dist || 1) > 0.97) return Math.atan2(other.y + 1.15 - 0.45 * other.crouch - (p.y + eyeHeight(p)), dist);
@@ -2125,6 +2174,7 @@ function rayDistance(origin, direction, maxDist) {
 }
 
 function addTracer(from, to) {
+  if (ONLINE === "host") netFx.push(["t", r2(from.x), r2(from.y), r2(from.z), r2(to.x), r2(to.y), r2(to.z)]);
   const length = from.distanceTo(to);
   const mesh = new THREE.Mesh(tracerGeometry, tracerMaterial);
   mesh.position.copy(from).lerp(to, 0.5);
@@ -2139,7 +2189,7 @@ function shoot(p, other) {
   p.fireTimer = RIFLE_FIRE_TIME;
   p.recoil = 1;
   p.flash = 0.05;
-  const moving = keys[p.controls.forward] || keys[p.controls.back];
+  const moving = held(p, "forward") || held(p, "back");
   const spread = (moving ? 0.03 : 0.01) * (1 - 0.85 * p.aim) * (1 - 0.3 * p.crouch);
   const pitch = aimPitch(p, other) + (Math.random() - 0.5) * spread;
   const yaw = p.yaw + (Math.random() - 0.5) * spread;
@@ -2184,7 +2234,16 @@ function shoot(p, other) {
 
 function throwGrenade(p) {
   const dir = forwardOf(p);
-  const pitch = p === players[0] && mouseLocked() ? p.pitch : 0.15;
+  const pitch = usesMouse(p) ? p.pitch : 0.15;
+  const mesh = makeGrenadeMesh();
+  grenades.push({
+    mesh, owner: p, fuse: GRENADE_FUSE,
+    x: p.x + dir.x * 0.5, y: p.y + 1.5, z: p.z + dir.z * 0.5,
+    vx: dir.x * 11, vy: 4 + pitch * 9, vz: dir.z * 11
+  });
+}
+
+function makeGrenadeMesh() {
   const mesh = new THREE.Group();
   const body = new THREE.Mesh(new THREE.SphereGeometry(0.075, 12, 10), new THREE.MeshStandardMaterial({ color: "#3e4a2a", roughness: 0.6 }));
   const top = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.05, 8), new THREE.MeshStandardMaterial({ color: "#777", metalness: 0.8, roughness: 0.4 }));
@@ -2192,11 +2251,7 @@ function throwGrenade(p) {
   body.castShadow = true;
   mesh.add(body, top);
   scene.add(mesh);
-  grenades.push({
-    mesh, owner: p, fuse: GRENADE_FUSE,
-    x: p.x + dir.x * 0.5, y: p.y + 1.5, z: p.z + dir.z * 0.5,
-    vx: dir.x * 11, vy: 4 + pitch * 9, vz: dir.z * 11
-  });
+  return mesh;
 }
 
 function explodeGrenade(g) {
@@ -2234,6 +2289,21 @@ function addSmoke(x, y, z, size, color) {
 }
 
 // ---------- Players ----------
+// Is this player pressing a control ("forward", "jump", "attack", ...)? Online, the host gets the friend's presses
+// from the internet in p.remote; everyone else reads this device's keyboard, mouse and touch buttons.
+function held(p, name) {
+  if (p.remote) return !!p.remote[name];
+  const c = p.controls;
+  if (name === "fire") return !!(keys[c.fire] || keys[c.fire2]);
+  return !!keys[c[name]];
+}
+
+// Does this player aim with a mouse (so up and down aim is exact)?
+function usesMouse(p) {
+  if (p.remote) return !!p.remote.mouse;
+  return p === players[ONLINE ? LOCAL : 0] && mouseLocked();
+}
+
 function restart() {
   players.forEach((p, i) => {
     Object.assign(p, {
@@ -2268,6 +2338,13 @@ function restart() {
   winner = null;
   winnerTimer = 0;
   document.getElementById("message").style.display = "none";
+  if (ONLINE === "host") netFx.push(["restart"]);
+}
+
+// R and the ↻ button: online the host runs the game, so the guest asks the host to restart
+function restartGame() {
+  if (ONLINE === "guest") { if (net && net.open) net.send({ type: "restart" }); }
+  else restart();
 }
 
 // Move sideways, but not into walls or into the side of a platform
@@ -2303,6 +2380,7 @@ function die(p) {
   const floor = floorAt(p.x, p.z, p.y + 0.1);
   addSplat(p.x, floor + 0.015, p.z, 9);
   addSplat(p.x + 0.4, floor + 0.016, p.z + 0.3, 5);
+  if (ONLINE === "host") netFx.push(["pool", r2(p.x), r2(floor), r2(p.z)]);
 }
 
 function updatePlayer(p, other, dt) {
@@ -2314,29 +2392,29 @@ function updatePlayer(p, other, dt) {
   if (!CASTLE) {
     // Crouching and aiming happen smoothly over a fraction of a second. You cannot aim while reloading.
     const toward = (value, target, speed) => value < target ? Math.min(target, value + speed * dt) : Math.max(target, value - speed * dt);
-    p.crouch = toward(p.crouch, keys[c.crouch] && p.onGround ? 1 : 0, 7);
+    p.crouch = toward(p.crouch, held(p, "crouch") && p.onGround ? 1 : 0, 7);
     // The scope button is a switch: press once to look through the scope, press again to stop
-    if (keys[c.aim] && !p.aimHeld) p.aimOn = !p.aimOn;
-    p.aimHeld = !!keys[c.aim];
-    if (keys[c.sprint]) p.aimOn = false;   // starting to sprint lowers the rifle
+    if (held(p, "aim") && !p.aimHeld) p.aimOn = !p.aimOn;
+    p.aimHeld = !!held(p, "aim");
+    if (held(p, "sprint")) p.aimOn = false;   // starting to sprint lowers the rifle
     p.aim = toward(p.aim, p.aimOn && p.reload <= 0 ? 1 : 0, 7);
   }
   // Crouching and aiming make you walk slower
   const slow = (1 - 0.55 * p.crouch) * (1 - 0.45 * p.aim);
   // With the mouse, A and D step sideways (the mouse turns). Without it, A/D and ←/→ turn.
   // On a phone you look around by dragging, so the joystick steps sideways too
-  const strafe = (p === players[0] && mouseLocked()) || isPhone;
+  const strafe = p.remote ? !!p.remote.strafe : usesMouse(p) || isPhone;
   let side = 0;
   if (strafe) {
-    if (keys[c.left]) side -= 1;
-    if (keys[c.right]) side += 1;
-  } else {
-    if (keys[c.left]) p.yaw += TURN_SPEED * dt;
-    if (keys[c.right]) p.yaw -= TURN_SPEED * dt;
+    if (held(p, "left")) side -= 1;
+    if (held(p, "right")) side += 1;
+  } else if (!p.remote) {   // an online friend turns on their own device and sends us where they look
+    if (held(p, "left")) p.yaw += TURN_SPEED * dt;
+    if (held(p, "right")) p.yaw -= TURN_SPEED * dt;
   }
   let move = 0;
-  if (keys[c.forward]) move += 1;
-  if (keys[c.back]) move -= 0.6;
+  if (held(p, "forward")) move += 1;
+  if (held(p, "back")) move -= 0.6;
   if (p.stick) {
     // Joystick: push up to walk forward, sideways to step sideways, as far as you push it
     side = p.stick.x;
@@ -2345,7 +2423,7 @@ function updatePlayer(p, other, dt) {
   // Sprint: hold Left Shift (player 2: the ' key), or push the joystick all the way forward.
   // Only forwards, and not while crouching or aiming.
   const pushedAllTheWay = p.stick && Math.hypot(p.stick.x, p.stick.y) > 0.95;
-  const sprinting = (keys[c.sprint] || pushedAllTheWay) && move > 0.5 && p.crouch < 0.3 && p.aim < 0.3;
+  const sprinting = (held(p, "sprint") || pushedAllTheWay) && move > 0.5 && p.crouch < 0.3 && p.aim < 0.3;
   const speed = slow * (sprinting ? SPRINT_SPEED : 1);
   if (move || side) {
     // (-dir.z, dir.x) points to the right of where you look
@@ -2369,9 +2447,9 @@ function updatePlayer(p, other, dt) {
 
   // Jumping and falling, landing on the ground or on top of platforms.
   // In a waterfall you swim instead: hold jump to swim up, let go to sink slowly.
-  if (keys[c.jump] && p.onGround && p.crouch < 0.5) { p.vy = JUMP_SPEED; p.onGround = false; }
+  if (held(p, "jump") && p.onGround && p.crouch < 0.5) { p.vy = JUMP_SPEED; p.onGround = false; }
   const prevY = p.y;
-  if (inWaterfall(p)) p.vy = keys[c.jump] ? SWIM_SPEED : -SINK_SPEED;
+  if (inWaterfall(p)) p.vy = held(p, "jump") ? SWIM_SPEED : -SINK_SPEED;
   else p.vy -= GRAVITY * dt;
   p.y += p.vy * dt;
   p.onGround = false;
@@ -2400,11 +2478,11 @@ function updatePlayer(p, other, dt) {
       if (p.reload <= 0) p.ammo = RIFLE_AMMO;
     } else if (p.ammo === 0) {
       p.reload = RELOAD_TIME;
-    } else if (keys[c.attack] && p.fireTimer <= 0) {
+    } else if (held(p, "attack") && p.fireTimer <= 0) {
       shoot(p, other);
     }
     // Grenade, with a cooldown so you can't spam it
-    if ((keys[c.fire] || keys[c.fire2]) && p.fireCooldown === 0) {
+    if (held(p, "fire") && p.fireCooldown === 0) {
       throwGrenade(p);
       p.fireCooldown = GRENADE_COOLDOWN;
     }
@@ -2413,7 +2491,7 @@ function updatePlayer(p, other, dt) {
 
   // Sword: hits the other knight if they are close and in front of you
   p.swingCooldown -= dt;
-  if (keys[c.attack] && p.swingCooldown <= 0) {
+  if (held(p, "attack") && p.swingCooldown <= 0) {
     p.swing = 0.3;
     p.swingCooldown = 0.5;
     const dx = other.x - p.x, dz = other.z - p.z;
@@ -2431,7 +2509,7 @@ function updatePlayer(p, other, dt) {
   p.swing = Math.max(0, p.swing - dt);
 
   // Fireball, with a cooldown so you can't spam it
-  if ((keys[c.fire] || keys[c.fire2]) && p.fireCooldown === 0) {
+  if (held(p, "fire") && p.fireCooldown === 0) {
     shootFireball(p);
     p.fireCooldown = FIREBALL_COOLDOWN;
   }
@@ -2456,8 +2534,14 @@ const positionVector = new THREE.Vector3();
 const upAxis = new THREE.Vector3(0, 1, 0);
 
 function updateWorld(dt, time) {
+  const simulate = ONLINE !== "guest";   // an online guest just shows what the host sends
   // Fireballs fly straight, spit embers, and explode on the other knight or a wall
   for (const f of fireballs) {
+    if (!simulate) {
+      const pos = f.mesh.position;
+      addParticle(pos.x, pos.y, pos.z, Math.random() - 0.5, Math.random() * 1.5, Math.random() - 0.5, 0.08, "#ff8a1a", 0.35, -1);
+      continue;
+    }
     f.mesh.position.x += f.dir.x * FIREBALL_SPEED * dt;
     f.mesh.position.z += f.dir.z * FIREBALL_SPEED * dt;
     f.life -= dt;
@@ -2491,7 +2575,7 @@ function updateWorld(dt, time) {
 
   // Hearts spin, bob, and heal whoever walks into them
   heartTimer -= dt;
-  if (heartTimer <= 0) {
+  if (simulate && heartTimer <= 0) {
     if (hearts.length < MAX_HEARTS) spawnHeart();
     heartTimer = HEART_EVERY;
   }
@@ -2499,7 +2583,7 @@ function updateWorld(dt, time) {
     h.rotation.y = time * 2;
     h.position.y = 0.9 + Math.sin(time * 3 + h.position.x) * 0.15;
     for (const p of players) {
-      if (!h.taken && !p.dead && Math.hypot(p.x - h.position.x, p.z - h.position.z) < 1 && p.y < 1.5) {
+      if (simulate && !h.taken && !p.dead && Math.hypot(p.x - h.position.x, p.z - h.position.z) < 1 && p.y < 1.5) {
         p.health = Math.min(MAX_HEALTH, p.health + (CASTLE ? HEART_HEAL : MEDKIT_HEAL));
         h.taken = true;
         scene.remove(h);
@@ -2514,6 +2598,7 @@ function updateWorld(dt, time) {
 
   // Grenades fly in an arc, bounce off the ground and walls, and go off when the fuse runs out
   for (const g of grenades) {
+    if (!simulate) { g.mesh.rotation.x += dt * 8; continue; }
     const prevY = g.y;
     g.vy -= 20 * dt;
     const nx = g.x + g.vx * dt, nz = g.z + g.vz * dt;
@@ -2838,12 +2923,13 @@ const composers = players.map(p => {
 
 function resize() {
   renderer.setSize(innerWidth, innerHeight);
+  const viewWidth = innerWidth / VIEWS.length;
   players.forEach((p, i) => {
-    p.camera.aspect = (innerWidth / 2) / innerHeight;
+    p.camera.aspect = viewWidth / innerHeight;
     p.camera.updateProjectionMatrix();
     if (composers[i]) {
       composers[i].setPixelRatio(renderer.getPixelRatio());
-      composers[i].setSize(innerWidth / 2, innerHeight);
+      composers[i].setSize(viewWidth, innerHeight);
     }
   });
 }
@@ -2852,13 +2938,333 @@ resize();
 restart();
 document.getElementById("loading").style.display = "none";
 
+// ---------- Online: one player on each device ----------
+// The host (who made the code) runs the whole game. The guest sends what it presses and where it looks,
+// and gets back where everything is (about 25 times a second) plus effects like explosions, blood and bullet trails.
+// Connection: first directly between the devices (PeerJS). If that doesn't work within a few seconds,
+// through a public message server (HiveMQ), which works on any network.
+const PEER_PREFIX = "knightfight-erik-";        // the same names the 2D menu uses, so a code works from there too
+const RELAY_BROKER = "wss://broker.hivemq.com:8884/mqtt";
+const RELAY_TOPIC = "knightfight-erik/";
+const CODE_LETTERS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+let net = null;              // the connection to the friend
+let peer = null;             // PeerJS (direct route)
+let relayClient = null;      // MQTT (backup route)
+let onlineStarted = false;
+let lastSent = 0;
+let lastInput = "";
+const waiting = document.getElementById("waiting");
+
+// Round to 2 decimals to keep the messages short
+function r2(v) {
+  return Math.round(v * 100) / 100;
+}
+
+function showWaiting(title, text) {
+  waiting.style.display = title || text ? "flex" : "none";
+  waiting.querySelector("h1").textContent = title || "";
+  waiting.querySelector("p").textContent = text || "";
+}
+
+// Works like a PeerJS connection (on, send, close, open), so the rest of the game doesn't need to know the difference
+class RelayConnection {
+  constructor(client, sendTopic) {
+    this.client = client;
+    this.sendTopic = sendTopic;
+    this.handlers = {};
+    this.open = false;
+    this.closed = false;
+    this.lastHeard = Date.now();
+    this.pinger = setInterval(() => { if (this.open) this.send({ type: "ping" }); }, 3000);
+    this.watchdog = setInterval(() => { if (this.open && Date.now() - this.lastHeard > 10000) this.close(true); }, 2000);
+  }
+  on(event, handler) { (this.handlers[event] = this.handlers[event] || []).push(handler); }
+  emit(event, value) { (this.handlers[event] || []).forEach(handler => handler(value)); }
+  send(message) { if (this.client.connected) this.client.publish(this.sendTopic, JSON.stringify(message)); }
+  receive(message) {
+    this.lastHeard = Date.now();
+    if (message.type === "bye") this.close(true);
+    else if (message.type !== "ping") this.emit("data", message);
+  }
+  start() { this.open = true; this.lastHeard = Date.now(); this.emit("open"); }
+  close(theyLeft) {
+    if (this.closed) return;
+    this.closed = true;
+    clearInterval(this.pinger);
+    clearInterval(this.watchdog);
+    if (!theyLeft) this.send({ type: "bye" });
+    this.open = false;
+    this.emit("close");
+  }
+}
+
+function connectRelay(listenTopic, onMessage) {
+  if (typeof mqtt === "undefined") return null;
+  const client = mqtt.connect(RELAY_BROKER, { clientId: "kf3d-" + Math.random().toString(36).slice(2, 10), reconnectPeriod: 2000, connectTimeout: 8000 });
+  client.on("connect", () => client.subscribe(listenTopic));
+  client.on("message", (topic, payload) => { try { onMessage(JSON.parse(payload.toString())); } catch (e) {} });
+  return client;
+}
+
+// The online scripts load in the background; wait for them (up to 10 seconds) before starting
+function whenNetworkReady(start) {
+  const t0 = Date.now();
+  const check = setInterval(() => {
+    if (typeof Peer !== "undefined" || typeof mqtt !== "undefined" || Date.now() - t0 > 10000) {
+      clearInterval(check);
+      start();
+    }
+  }, 200);
+}
+
+// ----- Host -----
+function hostOnline() {
+  let code = "";
+  for (let i = 0; i < 4; i++) code += CODE_LETTERS[Math.floor(Math.random() * CODE_LETTERS.length)];
+  showWaiting(code, "This is your code. Give it to your friend: they choose Play on two computers, type the code and press Join. Then wait here.");
+  if (typeof Peer !== "undefined") {
+    peer = new Peer(PEER_PREFIX + code);
+    peer.on("connection", c => acceptFriend(c));
+    // Phones pause the page when you switch app (to send the code): connect again when back
+    peer.on("disconnected", () => { try { if (!peer.destroyed) peer.reconnect(); } catch (e) {} });
+    peer.on("error", err => {
+      if (err.type === "unavailable-id") { peer.destroy(); if (relayClient) relayClient.end(); hostOnline(); }
+    });
+  }
+  const base = RELAY_TOPIC + code;
+  let relay = null;
+  relayClient = connectRelay(base + "/host", message => {
+    if (message.type === "join") {
+      if (relay && relay.open && net === relay) return;   // already playing with this friend
+      if (relay) relay.close(true);
+      relay = new RelayConnection(relayClient, base + "/guest");
+      acceptFriend(relay);
+      relay.send({ type: "welcome" });
+      relay.start();
+    } else if (relay) {
+      relay.receive(message);
+    }
+  });
+}
+
+function acceptFriend(c) {
+  c.on("data", d => {
+    if (d.type === "hello") {
+      // The friend is still in the 2D menu: tell them to come to the 3D game
+      c.send({ type: "goto3d", mode: MODE });
+      setTimeout(() => c.close(), 1500);
+    } else if (d.type === "hello3d") {
+      if (net && net.open && net !== c) { c.close(); return; }   // only one friend at a time
+      net = c;
+      players[1].name = String(d.name || "Player 2").slice(0, 20);
+      players.forEach(p => { p.hud.querySelector(".name").textContent = p.name; });
+      players[1].remote = {};
+      restart();
+      onlineStarted = true;
+      showWaiting("");
+    } else if (c === net) {
+      onHostData(d);
+    }
+  });
+  c.on("close", () => { if (c === net) onlineLost(); });
+}
+
+function onHostData(d) {
+  const friend = players[1];
+  if (d.type === "input") {
+    friend.remote = d.i;
+    friend.stick = d.i.stick || null;
+    friend.yaw = d.yaw;
+    friend.pitch = d.pitch;
+  }
+  if (d.type === "restart") restart();
+}
+
+// ----- Guest -----
+function joinOnline(code) {
+  showWaiting(code, "Joining your friend's game...");
+  if (typeof Peer === "undefined") { joinRelay(code); return; }
+  const myPeer = new Peer();
+  peer = myPeer;
+  let gaveUp = false;
+  const tryBackup = () => {
+    if (gaveUp || onlineStarted || (net && net.open)) return;
+    gaveUp = true;
+    try { myPeer.destroy(); } catch (e) {}
+    peer = null;
+    joinRelay(code);
+  };
+  myPeer.on("open", () => {
+    useHostConnection(myPeer.connect(PEER_PREFIX + code, { reliable: true }));
+    setTimeout(tryBackup, 6000);
+  });
+  myPeer.on("error", tryBackup);
+}
+
+function joinRelay(code) {
+  showWaiting(code, "Trying another way to reach your friend...");
+  const base = RELAY_TOPIC + code;
+  let relay = null;
+  const myClient = connectRelay(base + "/guest", message => {
+    if (message.type === "welcome" && !relay) {
+      relay = new RelayConnection(myClient, base + "/host");
+      useHostConnection(relay);
+      relay.start();
+    } else if (relay) {
+      relay.receive(message);
+    }
+  });
+  if (!myClient) { showWaiting(code, "Couldn't reach your friend. Check your internet and try again."); return; }
+  relayClient = myClient;
+  let tries = 0;
+  const asking = setInterval(() => {
+    if (relay) { clearInterval(asking); return; }
+    if (++tries > 15) {
+      clearInterval(asking);
+      showWaiting(code, "Couldn't reach your friend. Check the code, and that they still have the game open.");
+      return;
+    }
+    if (myClient.connected) myClient.publish(base + "/host", JSON.stringify({ type: "join" }));
+  }, 1000);
+}
+
+function useHostConnection(c) {
+  c.on("open", () => {
+    net = c;
+    c.send({ type: "hello3d", name: MY_NAME || "Player 2" });
+  });
+  c.on("data", d => { if (d.type === "state") applyState(d); });
+  c.on("close", () => { if (c === net) onlineLost(); });
+}
+
+// ----- Sending -----
+const PLAYER_FIELDS = ["x", "y", "z", "yaw", "pitch", "health", "dead", "deadTime", "swing", "crouch", "aim", "walk", "moveAmount",
+                       "fireCooldown", "ammo", "reload", "recoil", "flash", "headshot", "hurt", "shake", "onGround"];
+
+function sendOnline() {
+  if (!net || !net.open || !onlineStarted && ONLINE === "host") return;
+  const now = performance.now();
+  const every = net instanceof RelayConnection ? 50 : 35;   // the backup route is a bit slower, so send a little less often
+  if (ONLINE === "host") {
+    if (now - lastSent < every) return;
+    lastSent = now;
+    net.send({
+      type: "state",
+      p: players.map(p => PLAYER_FIELDS.map(f => typeof p[f] === "number" ? Math.round(p[f] * 1000) / 1000 : p[f])),
+      h: hearts.map(h => [r2(h.position.x), r2(h.position.z)]),
+      f: fireballs.map(f => [r2(f.mesh.position.x), r2(f.mesh.position.y), r2(f.mesh.position.z)]),
+      g: grenades.map(g => [r2(g.x), r2(g.y), r2(g.z)]),
+      w: winner,
+      n: players.map(p => p.name),
+      fx: netFx
+    });
+    netFx = [];
+  } else {
+    // The guest sends what it presses and where it looks: right away when the buttons change, otherwise regularly
+    const me = players[LOCAL];
+    const i = {};
+    for (const name of ["forward", "back", "left", "right", "jump", "attack", "fire", "aim", "crouch", "sprint"]) i[name] = held(me, name);
+    i.strafe = usesMouse(me) || isPhone;
+    i.mouse = usesMouse(me);
+    i.stick = me.stick || null;
+    const buttons = JSON.stringify(i);
+    if (buttons === lastInput && now - lastSent < every) return;
+    lastInput = buttons;
+    lastSent = now;
+    net.send({ type: "input", i, yaw: r2(me.yaw), pitch: r2(me.pitch) });
+  }
+}
+
+// ----- Receiving (guest) -----
+function applyState(d) {
+  if (!onlineStarted) {
+    onlineStarted = true;
+    showWaiting("");
+  }
+  d.p.forEach((values, index) => {
+    const p = players[index];
+    PLAYER_FIELDS.forEach((f, k) => {
+      const v = values[k];
+      if (f === "x" || f === "y" || f === "z") p["target" + f] = v;
+      else if (f === "yaw" || f === "pitch") { if (index !== LOCAL) p["target" + f] = v; }   // you look around yourself
+      else p[f] = v;
+    });
+    if (p.targetx === undefined) return;
+    if (p.x === undefined || Math.hypot(p.x - p.targetx, p.z - p.targetz) > 4) { p.x = p.targetx; p.y = p.targety; p.z = p.targetz; }
+  });
+  d.n.forEach((name, i) => { players[i].name = name; players[i].hud.querySelector(".name").textContent = name; });
+  // Hearts, fireballs and grenades: make or remove meshes so the lists match, then move them into place
+  while (hearts.length > d.h.length) scene.remove(hearts.pop());
+  while (hearts.length < d.h.length) hearts.push(makePickup(0, 0));
+  d.h.forEach(([x, z], i) => { hearts[i].position.x = x; hearts[i].position.z = z; });
+  while (fireballs.length > d.f.length) scene.remove(fireballs.pop().mesh);
+  while (fireballs.length < d.f.length) fireballs.push({ mesh: makeFireballMesh() });
+  d.f.forEach(([x, y, z], i) => fireballs[i].mesh.position.set(x, y, z));
+  while (grenades.length > d.g.length) scene.remove(grenades.pop().mesh);
+  while (grenades.length < d.g.length) grenades.push({ mesh: makeGrenadeMesh() });
+  d.g.forEach(([x, y, z], i) => grenades[i].mesh.position.set(x, y, z));
+  // Effects: play them here too
+  for (const e of d.fx) {
+    if (e[0] === "x") explode(new THREE.Vector3(e[1], e[2], e[3]), e[4]);
+    if (e[0] === "t") addTracer(new THREE.Vector3(e[1], e[2], e[3]), new THREE.Vector3(e[4], e[5], e[6]));
+    if (e[0] === "b") bleed(e[1], e[2], e[3], e[4], e[5], e[6]);
+    if (e[0] === "h") addBulletHole(new THREE.Vector3(e[1], e[2], e[3]), new THREE.Vector3(e[4], e[5], e[6]));
+    if (e[0] === "pool") { addSplat(e[1], e[2] + 0.015, e[3], 9); addSplat(e[1] + 0.4, e[2] + 0.016, e[3] + 0.3, 5); }
+    if (e[0] === "restart") { holes.count = 0; nextHole = 0; drops = []; splats = []; particles = []; players.forEach(p => p.model.rotation.set(0, 0, 0)); }
+  }
+  // Winner message
+  const message = document.getElementById("message");
+  if (d.w && !winner) { message.querySelector("h1").textContent = d.w + " wins!"; message.style.display = "flex"; }
+  if (!d.w && winner) message.style.display = "none";
+  winner = d.w;
+}
+
+// The guest glides everyone smoothly towards where the host says they are, and turns with the keyboard right away
+function guestStep(dt) {
+  const me = players[LOCAL];
+  if (!(usesMouse(me) || isPhone) && !me.dead) {
+    if (held(me, "left")) me.yaw += TURN_SPEED * dt;
+    if (held(me, "right")) me.yaw -= TURN_SPEED * dt;
+  }
+  const k = 1 - Math.exp(-15 * dt);
+  for (const p of players) {
+    if (p.targetx === undefined) continue;
+    p.x += (p.targetx - p.x) * k;
+    p.y += (p.targety - p.y) * k;
+    p.z += (p.targetz - p.z) * k;
+    if (p !== me && p.targetyaw !== undefined) {
+      const turn = Math.atan2(Math.sin(p.targetyaw - p.yaw), Math.cos(p.targetyaw - p.yaw));   // the short way round
+      p.yaw += turn * k;
+      p.pitch += (p.targetpitch - p.pitch) * k;
+    }
+  }
+}
+
+function onlineLost() {
+  onlineStarted = false;
+  net = null;
+  players[1].remote = ONLINE === "host" ? {} : players[1].remote;
+  showWaiting("", "Your friend left the game, or the connection was lost. Press Esc (or ☰) to go back to the menu.");
+}
+
+// Leaving the page: say goodbye so the friend knows right away
+addEventListener("pagehide", () => {
+  if (net && net.close) net.close();
+  if (relayClient) relayClient.end(true);
+  if (peer) peer.destroy();
+});
+
 const clock = new THREE.Clock();
 // One step of the game: move everyone, fight, and update the world
 let gameTime = 0;
 function step(dt) {
   gameTime += dt;
   const time = gameTime;
-  if (!winner) {
+  if (ONLINE === "guest") {
+    guestStep(dt);
+  } else if (ONLINE === "host" && !onlineStarted) {
+    // Waiting for the friend: nothing moves yet
+  } else if (!winner) {
     updatePlayer(players[0], players[1], dt);
     updatePlayer(players[1], players[0], dt);
     separate(players[0], players[1]);
@@ -2882,11 +3288,13 @@ function loop() {
   const dt = Math.min(clock.getDelta(), 0.05);
   step(dt);
   gradePasses.forEach(g => { g.uniforms.time.value = gameTime % 100; });
-  const half = innerWidth / 2;
+  if (ONLINE) sendOnline();
+  const viewWidth = innerWidth / VIEWS.length;
   renderer.setScissorTest(true);
-  players.forEach((p, i) => {
-    renderer.setViewport(i * half, 0, half, innerHeight);
-    renderer.setScissor(i * half, 0, half, innerHeight);
+  VIEWS.forEach((i, slot) => {
+    const p = players[i];
+    renderer.setViewport(slot * viewWidth, 0, viewWidth, innerHeight);
+    renderer.setScissor(slot * viewWidth, 0, viewWidth, innerHeight);
     if (composers[i]) composers[i].render(dt);
     else renderer.render(scene, p.camera);
   });
@@ -2894,11 +3302,32 @@ function loop() {
 }
 loop();
 
+// Online: start hosting, or join the friend's game
+if (ONLINE === "host") { showWaiting("", "Getting ready..."); whenNetworkReady(hostOnline); }
+if (ONLINE === "guest") {
+  const code = (urlParams.get("code") || "").toUpperCase().slice(0, 4);
+  showWaiting(code, "Joining your friend's game...");
+  whenNetworkReady(() => joinOnline(code));
+}
+
 // Handy for testing in the browser console
 window.game = {
-  players, restart, keys, platforms, mode: MODE, get grenades() { return grenades; },
+  players, restart, keys, platforms, mode: MODE, online: ONLINE, get grenades() { return grenades; },
+  get connected() { return !!(net && net.open && onlineStarted); }, get viaBackup() { return net instanceof RelayConnection; },
   // Run the game for a number of seconds without drawing (for testing)
   run(seconds) { for (let t = 0; t < seconds; t += 1 / 60) step(1 / 60); },
+  // Keep the game (and the online connection) running for a while even in a hidden tab (for testing two tabs at once)
+  async pump(seconds) {
+    const channel = new MessageChannel();
+    const pause = () => new Promise(r => { channel.port1.onmessage = () => r(); channel.port2.postMessage(0); });
+    const end = performance.now() + seconds * 1000;
+    let last = performance.now();
+    while (performance.now() < end) {
+      const now = performance.now();
+      if (now - last >= 16) { step(Math.min(0.05, (now - last) / 1000)); if (ONLINE) sendOnline(); last = now; }
+      await pause();
+    }
+  },
   get hearts() { return hearts; }, get fireballs() { return fireballs; }, get winner() { return winner; },
   get blood() { return { drops: drops.length, splats: splats.length }; }
 };

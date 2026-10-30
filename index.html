@@ -101,7 +101,7 @@
       <button id="logIn">2 - Log in</button>
       <p id="loginNote" class="note"></p>
       <!-- Change the number with every upload, so you can see if a phone has the newest version -->
-      <p class="version">Version 20</p>
+      <p class="version">Version 21</p>
     </div>
     <!-- Log in: just a username -->
     <div id="loginForm" class="menu" style="display: none">
@@ -119,7 +119,7 @@
       <button id="toLoginMenu">3 - Go to the login menu</button>
       <button id="friends">4 - Friends</button>
       <p id="menuNote" class="note"></p>
-      <p class="version">Version 20</p>
+      <p class="version">Version 21</p>
     </div>
     <!-- Play on one computer: pick the normal 2D game or the first person 3D game -->
     <div id="modeMenu" class="menu" style="display: none">
@@ -143,6 +143,19 @@
       <button id="joinGame">Join with code</button>
       <button id="onlineBack">Back</button>
       <p id="onlineNote" class="note"></p>
+    </div>
+    <!-- Creating an online game: first 2D or 3D, then (for 3D) which time -->
+    <div id="hostDimMenu" class="menu" style="display: none">
+      <h1>What do you want to play?</h1>
+      <button id="host2D">1 - 2D</button>
+      <button id="host3D">2 - 3D (first person)</button>
+      <button id="hostDimBack">Back</button>
+    </div>
+    <div id="hostTimeMenu" class="menu" style="display: none">
+      <h1>3D: choose a time</h1>
+      <button id="host3DCastle">1 - Medieval (knights and a castle)</button>
+      <button id="host3DModern">2 - Modern (soldiers and a fort)</button>
+      <button id="hostTimeBack">Back</button>
     </div>
     <!-- Friends menu: the options don't do anything yet -->
     <div id="friendsMenu" class="menu" style="display: none">
@@ -688,6 +701,7 @@ const JOIN_WAIT = 6000;   // milliseconds to wait for the direct connection befo
 function joinGame() {
   if (!onlineAvailable()) return;
   const code = joinCode.value.trim().toUpperCase();
+  joinedCode = code;
   if (code.length !== 4) {
     onlineNote.textContent = "Type your friend's 4 letter code.";
     return;
@@ -843,7 +857,8 @@ function useConnection(c, role) {
     playerNames = {};
     playerNames[role === "host" ? 1 : 2] = savedUsernameOrName();
     c.send({ type: "hello", name: savedUsernameOrName() });
-    startOnlineGame();
+    // The host starts right away. The guest waits for the host's hello, because a 3D host answers with "goto3d" instead.
+    if (role === "host") startOnlineGame();
   });
   c.on("data", onOnlineData);
   c.on("close", onlineEnded);
@@ -854,7 +869,20 @@ function savedUsernameOrName() {
   return username || "Player";
 }
 
+let joinedCode = "";
+
 function onOnlineData(d) {
+  if (onlineRole === "guest" && !started) {
+    if (d.type === "goto3d") {
+      // The friend is playing 3D: go to the 3D page and join the game from there
+      const mode = d.mode === "modern" ? "modern" : "castle";
+      leaveOnline();
+      location.href = "3d.html?mode=" + mode + "&online=guest&code=" + encodeURIComponent(joinedCode) +
+                      "&name=" + encodeURIComponent(savedUsernameOrName());
+      return;
+    }
+    if (d.type === "hello") startOnlineGame();
+  }
   if (d.type === "hello") playerNames[onlineRole === "host" ? 2 : 1] = String(d.name).slice(0, 20);
   if (d.type === "input" && onlineRole === "host") remoteInput = d.input;
   if (d.type === "restart" && onlineRole === "host") reset();
@@ -943,7 +971,43 @@ function closeOnlineMenu() {
   menu.style.display = "flex";
 }
 
-document.getElementById("createGame").addEventListener("click", createGame);
+// "Create a game" first asks what to play. 2D is played right here; 3D opens the 3D page, which makes the code.
+const hostDimMenu = document.getElementById("hostDimMenu");
+const hostTimeMenu = document.getElementById("hostTimeMenu");
+
+function openHostDimMenu() {
+  onlineMenu.style.display = "none";
+  hostDimMenu.style.display = "flex";
+}
+
+function host2D() {
+  hostDimMenu.style.display = "none";
+  onlineMenu.style.display = "flex";
+  createGame();
+}
+
+function host3D() {
+  hostDimMenu.style.display = "none";
+  hostTimeMenu.style.display = "flex";
+}
+
+function host3DTime(time) {
+  location.href = "3d.html?mode=" + time + "&online=host&name=" + encodeURIComponent(savedUsernameOrName());
+}
+
+function backToOnlineMenu() {
+  hostDimMenu.style.display = "none";
+  hostTimeMenu.style.display = "none";
+  onlineMenu.style.display = "flex";
+}
+
+document.getElementById("createGame").addEventListener("click", openHostDimMenu);
+document.getElementById("host2D").addEventListener("click", host2D);
+document.getElementById("host3D").addEventListener("click", host3D);
+document.getElementById("hostDimBack").addEventListener("click", backToOnlineMenu);
+document.getElementById("host3DCastle").addEventListener("click", () => host3DTime("castle"));
+document.getElementById("host3DModern").addEventListener("click", () => host3DTime("modern"));
+document.getElementById("hostTimeBack").addEventListener("click", () => { hostTimeMenu.style.display = "none"; hostDimMenu.style.display = "flex"; });
 document.getElementById("joinGame").addEventListener("click", joinGame);
 document.getElementById("onlineBack").addEventListener("click", closeOnlineMenu);
 
@@ -1150,6 +1214,18 @@ document.addEventListener("keydown", function (e) {
     if (key === "1") play2D();
     if (key === "2") play3D();
     if (key === "Escape") closeModeMenu();
+    return;
+  }
+  if (hostDimMenu.style.display !== "none") {
+    if (key === "1") host2D();
+    if (key === "2") host3D();
+    if (key === "Escape") backToOnlineMenu();
+    return;
+  }
+  if (hostTimeMenu.style.display !== "none") {
+    if (key === "1") host3DTime("castle");
+    if (key === "2") host3DTime("modern");
+    if (key === "Escape") { hostTimeMenu.style.display = "none"; hostDimMenu.style.display = "flex"; }
     return;
   }
   if (onlineMenu.style.display !== "none") {
