@@ -53,7 +53,8 @@
                background: rgba(0, 0, 0, 0.65); text-align: center; padding: 20px; z-index: 5; }
     #waiting h1 { font-size: 64px; margin: 0 0 10px; color: #ffd84d; letter-spacing: 6px; text-shadow: 3px 3px 4px #000; }
     #waiting p { font-size: 22px; max-width: 700px; margin: 6px; }
-    #waiting .small { font-size: 16px; opacity: 0.7; }
+    #waiting button { margin-top: 18px; font-size: 22px; padding: 12px 28px; cursor: pointer;
+                      border: 3px solid #444; border-radius: 8px; background: #f1c40f; }
     #divider { position: fixed; top: 0; left: 50%; width: 4px; height: 100%; margin-left: -2px; background: #111; }
     #help { position: fixed; bottom: 8px; width: 100%; text-align: center; font-size: 14px; text-shadow: 1px 1px 2px #000; }
     #message { position: fixed; inset: 0; display: none; flex-direction: column; align-items: center; justify-content: center;
@@ -133,7 +134,7 @@
   <div id="touch"></div>
   <div id="turnPhone">Turn your phone sideways to play</div>
   <div id="loading">Building the battlefield...</div>
-  <div id="waiting"><h1></h1><p></p><p class="small">Esc (or ☰) for the menu</p></div>
+  <div id="waiting"><h1></h1><p></p><button id="waitingMenu">Back to the menu</button></div>
 
 <!-- three.js draws the 3D world. The import map tells the browser where "three" is. -->
 <script type="importmap">
@@ -148,6 +149,8 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
+import * as SkeletonUtils from "three/addons/utils/SkeletonUtils.js";
 
 // ---------- Settings ----------
 const ARENA = 20;            // the arena goes from -20 to 20 on both sides
@@ -233,6 +236,7 @@ function mouseLocked() {
 }
 
 addEventListener("mousedown", e => {
+  if (e.target.closest && e.target.closest("#waiting button")) return;   // a button on the waiting screen, not the game
   if (!mouseLocked()) {
     if (!isPhone) {
       const asked = renderer.domElement.requestPointerLock();
@@ -1758,6 +1762,7 @@ function makeViewSword(camera, layer) {
   forearm.position.set(0.03, -0.13, 0.08);
   forearm.rotation.set(0.6, 0, 0.25);
   holder.add(sword, glove, forearm);
+  holder.userData.sword = sword;
   holder.traverse(o => o.layers.set(layer));
   camera.add(holder);
   return holder;
@@ -1994,7 +1999,7 @@ if (ONLINE) {
 
 // Show the name player 1 logged in with in the 2D game's menu
 try {
-  const saved = localStorage.getItem("knightFightUsername");
+  const saved = localStorage.getItem("knightFightLogin");
   if (saved && !ONLINE) players[0].name = saved;
 } catch (e) {}
 if (ONLINE && MY_NAME) players[LOCAL].name = MY_NAME;
@@ -2764,7 +2769,7 @@ function placePlayer(p, time) {
   p.hud.querySelector(".fire div").style.width = (1 - p.fireCooldown / (CASTLE ? FIREBALL_COOLDOWN : GRENADE_COOLDOWN)) * 100 + "%";
   p.hud.querySelector(".health div").style.width = Math.max(0, p.health) + "%";
   p.hud.querySelector(".hit").style.opacity = p.hurt > 0 || p.dead ? 1 : 0;
-  if (p.dead) {
+  if (p.dead && !p.anim) {
     // Fall over backwards
     const fall = Math.min(1, p.deadTime / 0.6);
     m.rotation.set(fall * fall * Math.PI / 2, p.yaw, 0);
@@ -2791,6 +2796,7 @@ function placePlayer(p, time) {
     }
   }
   placeCamera(p);
+  if (p.anim) animateModel(p, time);
   if (!CASTLE) { animateSoldier(p, time); return; }
   const { upper, shieldArm } = m.userData;
   // Upper body: bobs up and down twice per stride, leans into the run and twists a little with the legs
@@ -2845,6 +2851,106 @@ function placePlayer(p, time) {
                     pose[1] - Math.abs(Math.cos(p.walk)) * 0.02 * run + 0.01 * run,
                     pose[2]);
   view.rotation.set(pose[3] + Math.sin(p.walk * 2) * 0.02 * run, pose[4] + p.sway * 0.6, pose[5] + Math.sin(p.walk) * 0.04 * run);
+}
+
+// ---------- Ready-made animated knight ----------
+// KayKit Adventurers by Kay Lousberg (www.kaylousberg.com), CC0: free for anyone to use.
+// Until it has loaded (or if it can't load), the knights built from simple shapes are shown instead.
+const KNIGHT_CLIPS = { idle: "Idle", run: "Running_A", jump: "Jump_Idle", attack: "1H_Melee_Attack_Slice_Diagonal",
+                       cast: "Spellcast_Shoot", die: "Death_A" };
+const KNIGHT_HIDE = ["1H_Sword_Offhand", "2H_Sword", "Rectangle_Shield", "Round_Shield", "Spike_Shield"];
+const ONE_SHOT = { attack: 0.45, cast: 0.5, die: 0.9 };   // these play once, in about this many seconds
+
+if (CASTLE) new GLTFLoader().load("models/knight.glb", gltf => {
+  players.forEach((p, i) => useKnightModel(p, i, gltf));
+  useModelSword(gltf);
+}, undefined, () => {});   // no model: keep the knights made of shapes
+
+function useKnightModel(p, i, gltf) {
+  const body = SkeletonUtils.clone(gltf.scene);
+  const team = i === 0 ? "#b3261e" : "#24539c";
+  body.traverse(o => {
+    if (KNIGHT_HIDE.includes(o.name)) o.visible = false;
+    if (!o.isMesh) return;
+    o.castShadow = true;
+    o.receiveShadow = true;
+    o.frustumCulled = false;   // the animation moves the arms and legs outside the box three.js knows about
+    // The cape gets the team color, so you can tell the two knights apart
+    if (o.name.includes("Cape")) o.material = new THREE.MeshStandardMaterial({ color: team, roughness: 0.85, side: THREE.DoubleSide });
+  });
+  // Make it as tall as our knights (about 1.9 m), facing the same way (forward is -z)
+  const size = new THREE.Box3().setFromObject(body).getSize(new THREE.Vector3());
+  body.scale.setScalar(1.9 / size.y);
+  body.rotation.y = Math.PI;
+  body.traverse(o => o.layers.set(1 + i));
+  p.model.children.forEach(c => { c.visible = false; });   // hide the knight made of shapes
+  p.model.add(body);
+  p.model.rotation.set(0, p.yaw, 0);
+  const mixer = new THREE.AnimationMixer(body);
+  const actions = {};
+  for (const [key, name] of Object.entries(KNIGHT_CLIPS)) {
+    const clip = THREE.AnimationClip.findByName(gltf.animations, name);
+    if (!clip) continue;
+    const action = mixer.clipAction(clip);
+    if (ONE_SHOT[key]) {
+      action.setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = true;
+      action.timeScale = clip.duration / ONE_SHOT[key];
+    }
+    actions[key] = action;
+  }
+  p.anim = { mixer, actions, current: null, lastTime: null };
+}
+
+// Choose what the model is doing from the game: dead, attacking, throwing a fireball, in the air, running or standing
+function animateModel(p, time) {
+  const a = p.anim;
+  const dt = a.lastTime === null ? 0 : Math.min(0.1, time - a.lastTime);
+  a.lastTime = time;
+  const busy = a.current && ONE_SHOT[a.current] && a.current !== "die" && a.actions[a.current].isRunning();
+  let want = "idle";
+  if (p.dead) want = "die";
+  else if (p.swing > 0.2) want = "attack";                                   // a new sword swing
+  else if (p.fireCooldown > FIREBALL_COOLDOWN - 0.15) want = "cast";         // just threw a fireball
+  else if (busy) want = a.current;                                           // let the swing or throw finish
+  else if (!p.onGround) want = "jump";
+  else if (p.moveAmount > 0.15) want = "run";
+  const restartSwing = want === "attack" && a.current === "attack" && !a.actions.attack.isRunning();
+  if ((want !== a.current || restartSwing) && a.actions[want]) {
+    const next = a.actions[want];
+    next.reset().fadeIn(want === "die" ? 0.1 : 0.12).play();
+    if (a.current && a.current !== want) a.actions[a.current].fadeOut(0.12);
+    a.current = want;
+  }
+  if (a.actions.run) a.actions.run.timeScale = 0.55 + 0.6 * Math.min(1.4, p.moveAmount);
+  a.mixer.update(dt);
+}
+
+// The sword in your own hand: the same sword the knight model holds
+function useModelSword(gltf) {
+  const source = gltf.scene.getObjectByName("1H_Sword");
+  if (!source) return;
+  players.forEach((p, i) => {
+    const view = p.viewSword;
+    const old = view.userData.sword;
+    const sword = source.clone();
+    sword.position.set(0, 0, 0);
+    sword.rotation.set(0, 0, 0);
+    sword.scale.set(1, 1, 1);
+    // As long as the old sword, with the handle in the same place
+    const ref = old.clone();
+    ref.position.set(0, 0, 0);
+    ref.updateMatrixWorld(true);
+    const oldBox = new THREE.Box3().setFromObject(ref);
+    const box = new THREE.Box3().setFromObject(sword);
+    const scale = 0.8 * (oldBox.max.y - oldBox.min.y) / (box.max.y - box.min.y);   // a bit shorter: this sword is chunkier
+    sword.scale.setScalar(scale);
+    sword.position.set(old.position.x, old.position.y + oldBox.min.y - box.min.y * scale, old.position.z);
+    sword.rotation.copy(old.rotation);
+    sword.traverse(o => { o.layers.set(3 + i); if (o.isMesh) o.castShadow = false; });
+    old.visible = false;
+    view.add(sword);
+  });
 }
 
 // Poses for the first-person sword: [x, y, z, tilt forward, turn, lean sideways]
@@ -3079,7 +3185,9 @@ function acceptFriend(c) {
       restart();
       onlineStarted = true;
       showWaiting("");
+      heardFriend();
     } else if (c === net) {
+      heardFriend();
       onHostData(d);
     }
   });
@@ -3149,8 +3257,9 @@ function useHostConnection(c) {
   c.on("open", () => {
     net = c;
     c.send({ type: "hello3d", name: MY_NAME || "Player 2" });
+    heardFriend();
   });
-  c.on("data", d => { if (d.type === "state") applyState(d); });
+  c.on("data", d => { heardFriend(); if (d.type === "state") applyState(d); });
   c.on("close", () => { if (c === net) onlineLost(); });
 }
 
@@ -3158,9 +3267,31 @@ function useHostConnection(c) {
 const PLAYER_FIELDS = ["x", "y", "z", "yaw", "pitch", "health", "dead", "deadTime", "swing", "crouch", "aim", "walk", "moveAmount",
                        "fireCooldown", "ammo", "reload", "recoil", "flash", "headshot", "hurt", "shake", "onGround"];
 
+// The friend's game sends something many times a second. If it goes quiet (closed the app, lost the
+// internet), say so and show the button back to the menu. If it starts answering again, keep playing.
+const QUIET_TIME = 6000;   // milliseconds
+let lastHeard = 0;
+let friendQuiet = false;
+
+function heardFriend() {
+  lastHeard = performance.now();
+  if (friendQuiet) {
+    friendQuiet = false;
+    showWaiting("");
+  }
+}
+
+function checkFriendQuiet(now) {
+  if (friendQuiet || now - lastHeard < QUIET_TIME) return;
+  friendQuiet = true;
+  showWaiting("", "Your friend isn't answering. They may have left the game, or lost the connection.");
+  if (document.pointerLockElement) document.exitPointerLock();
+}
+
 function sendOnline() {
   if (!net || !net.open || !onlineStarted && ONLINE === "host") return;
   const now = performance.now();
+  checkFriendQuiet(now);
   const every = net instanceof RelayConnection ? 50 : 35;   // the backup route is a bit slower, so send a little less often
   if (ONLINE === "host") {
     if (now - lastSent < every) return;
@@ -3257,12 +3388,18 @@ function guestStep(dt) {
   }
 }
 
+document.addEventListener("visibilitychange", () => { if (!document.hidden) lastHeard = performance.now(); });
+
 function onlineLost() {
+  friendQuiet = false;
   onlineStarted = false;
   net = null;
   players[1].remote = ONLINE === "host" ? {} : players[1].remote;
-  showWaiting("", "Your friend left the game, or the connection was lost. Press Esc (or ☰) to go back to the menu.");
+  showWaiting("", "Your friend left the game, or the connection was lost.");
+  if (document.pointerLockElement) document.exitPointerLock();   // show the mouse pointer, so you can press the button
 }
+
+document.getElementById("waitingMenu").addEventListener("click", () => { location.href = "index.html"; });
 
 // Leaving the page: say goodbye so the friend knows right away
 addEventListener("pagehide", () => {
