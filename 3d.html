@@ -3022,6 +3022,11 @@ function hostOnline() {
   let code = "";
   for (let i = 0; i < 4; i++) code += CODE_LETTERS[Math.floor(Math.random() * CODE_LETTERS.length)];
   showWaiting(code, "This is your code. Give it to your friend: they choose Play on two computers, type the code and press Join. Then wait here.");
+  const invited = (urlParams.get("invite") || "").slice(0, 20);
+  if (invited) {
+    showWaiting(code, "You invited " + invited + ". Waiting for them to join... (They can also type the code.)");
+    inviteFriend(invited, code);
+  }
   if (typeof Peer !== "undefined") {
     peer = new Peer(PEER_PREFIX + code);
     peer.on("connection", c => acceptFriend(c));
@@ -3045,6 +3050,18 @@ function hostOnline() {
       relay.receive(message);
     }
   });
+}
+
+// Invited from the friends list: tell the friend the code a few times until they come
+let inviteTimer = null;
+function inviteFriend(name, code) {
+  clearInterval(inviteTimer);
+  let tries = 0;
+  inviteTimer = setInterval(() => {
+    if (onlineStarted || ++tries > 30) { clearInterval(inviteTimer); return; }
+    if (relayClient && relayClient.connected)
+      relayClient.publish(RELAY_TOPIC + "invite/" + name.trim().toLowerCase(), JSON.stringify({ from: MY_NAME, code }));
+  }, 2000);
 }
 
 function acceptFriend(c) {

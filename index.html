@@ -37,6 +37,13 @@
                  border-radius: 8px; background: rgba(255, 255, 255, 0.12); }
     .friendRow span { font-size: 22px; min-width: 160px; text-align: left; }
     .menu .friendRow button { min-width: 0; font-size: 18px; padding: 6px 14px; }
+    .friendRow .online { color: #2ecc71; font-size: 16px; min-width: 0; }
+    #invitesList { display: flex; flex-direction: column; gap: 8px; max-height: 50%; overflow-y: auto; }
+    /* A friend asked you to play: a bar at the top of the screen, on top of everything */
+    #inviteBanner { display: none; position: fixed; top: 10px; left: 50%; transform: translateX(-50%); z-index: 20;
+                    background: #2ecc71; color: #000; font-size: 22px; padding: 14px 24px; border: 3px solid #145a32;
+                    border-radius: 10px; cursor: pointer; max-width: 90vw; text-align: center; }
+    #inviteBanner small { display: block; font-size: 15px; }
     /* Touch buttons for phones: each player gets arrows on their side plus action buttons */
     #touchControls { display: none; position: absolute; inset: 0; pointer-events: none; }
     .touchPad { position: absolute; bottom: 8px; display: flex; gap: 10px; align-items: flex-end; }
@@ -101,12 +108,14 @@
       <button id="logIn">2 - Log in</button>
       <p id="loginNote" class="note"></p>
       <!-- Change the number with every upload, so you can see if a phone has the newest version -->
-      <p class="version">Version 21</p>
+      <p class="version">Version 22</p>
     </div>
-    <!-- Log in: just a username -->
+    <!-- Log in: a username and a 6 digit code. A new name makes a new account with that code. -->
     <div id="loginForm" class="menu" style="display: none">
       <h1>Log in</h1>
-      <input id="usernameInput" maxlength="20" placeholder="Username" autocomplete="off">
+      <input id="usernameInput" maxlength="20" placeholder="Username (max 20)" autocomplete="off">
+      <input id="pinInput" type="password" inputmode="numeric" maxlength="6" placeholder="6 digit code" autocomplete="off">
+      <p class="note">New name? Then you make an account with this code. Remember the code!</p>
       <button id="loginConfirm">Log in</button>
       <button id="loginBack">Back</button>
       <p id="loginFormNote" class="note"></p>
@@ -119,7 +128,7 @@
       <button id="toLoginMenu">3 - Go to the login menu</button>
       <button id="friends">4 - Friends</button>
       <p id="menuNote" class="note"></p>
-      <p class="version">Version 21</p>
+      <p class="version">Version 22</p>
     </div>
     <!-- Play on one computer: pick the normal 2D game or the first person 3D game -->
     <div id="modeMenu" class="menu" style="display: none">
@@ -162,7 +171,7 @@
       <h1>Friends</h1>
       <button id="addFriend">1 - Add friend</button>
       <button id="yourFriends">2 - Your friends</button>
-      <button>3 - Friend invites</button>
+      <button id="friendInvites">3 - Friend invites</button>
       <button id="friendsBack">Back</button>
     </div>
     <!-- Add friend: type someone's username (searching comes later) -->
@@ -186,6 +195,14 @@
       <button id="friendsListBack">Back</button>
       <p id="friendsListNote" class="note"></p>
     </div>
+    <!-- Friend invites: people who want to be your friend. Yes or no. -->
+    <div id="invitesMenu" class="menu" style="display: none">
+      <h1>Friend invites</h1>
+      <div id="invitesList"></div>
+      <button id="invitesBack">Back</button>
+      <p id="invitesNote" class="note"></p>
+    </div>
+    <div id="inviteBanner"></div>
     <!-- Touch buttons, only shown on phones and tablets while playing -->
     <div id="touchControls"></div>
     <div id="rotateHint" class="menu">Turn your phone sideways to play</div>
@@ -323,8 +340,12 @@ const userLabel = document.getElementById("userLabel");
 const thirdButton = document.getElementById("toLoginMenu");
 const friendsButton = document.getElementById("friends");
 
-// The browser remembers your username, so you skip the login menu next time
-const LOGIN_KEY = "knightFightUsername";
+// The browser remembers your username, so you skip the login menu next time.
+// (A new key since the code was added, so everyone logs in once more with a code.)
+const LOGIN_KEY = "knightFightLogin";
+try { localStorage.removeItem("knightFightUsername"); } catch (e) {}
+const pinInput = document.getElementById("pinInput");
+pinInput.addEventListener("input", () => { pinInput.value = pinInput.value.replace(/\D/g, "").slice(0, 6); });
 
 function rememberLogin(name) {
   try { localStorage.setItem(LOGIN_KEY, name); } catch (e) {}
@@ -348,6 +369,8 @@ function setLoggedIn(name) {
   thirdButton.textContent = loggedIn ? "3 - Log out" : "3 - Go to the login menu";
   friendsButton.disabled = !loggedIn;
   friendsButton.textContent = loggedIn ? "4 - Friends" : "4 - Friends (log in first)";
+  // Logged in: tell the others you're online and listen for friend invites
+  setTimeout(loggedIn ? connectSocial : disconnectSocial, 0);
 }
 
 // Option 3 in the main menu: log out if logged in, otherwise go to the login menu
@@ -373,16 +396,38 @@ function openLoginForm() {
   loginMenu.style.display = "none";
   loginFormNote.textContent = "";
   usernameInput.value = "";
+  pinInput.value = "";
   loginForm.style.display = "flex";
   usernameInput.focus();
 }
 
-function confirmLogin() {
-  const name = usernameInput.value.trim();
-  if (name === "") {
+let loggingIn = false;
+
+async function confirmLogin() {
+  if (loggingIn) return;
+  const typed = usernameInput.value.trim();
+  const pin = pinInput.value;
+  if (typed === "") {
     loginFormNote.textContent = "Type a username first.";
     return;
   }
+  if (!NAME_PATTERN.test(typed)) {
+    loginFormNote.textContent = "Use only letters, numbers, spaces, - and _ in the name.";
+    return;
+  }
+  if (!/^\d{6}$/.test(pin)) {
+    loginFormNote.textContent = "The code must be 6 numbers.";
+    return;
+  }
+  loggingIn = true;
+  loginFormNote.textContent = "Logging in...";
+  const result = await checkAccount(typed, pin);
+  loggingIn = false;
+  if (result.error) {
+    loginFormNote.textContent = result.error;
+    return;
+  }
+  const name = result.name;
   rememberLogin(name);
   setLoggedIn(name);
   loginForm.style.display = "none";
@@ -464,7 +509,8 @@ function showSearchResults() {
   const text = friendInput.value.trim().toLowerCase();
   searchResults.innerHTML = "";
   if (text === "") return;
-  for (const name of TEST_USERS) {
+  const everyone = [...TEST_USERS, ...knownUsers.values()].filter(n => nameKey(n) !== nameKey(username));
+  for (const name of everyone) {
     if (name.toLowerCase().includes(text) && !blocked.includes(name)) {
       const button = document.createElement("button");
       button.textContent = name;
@@ -515,9 +561,17 @@ function addAsFriend() {
     playerNote.textContent = name + " is already your friend.";
     return;
   }
-  friends.push(name);
-  saveList(FRIENDS_KEY, friends);
-  playerNote.textContent = name + " is now your friend!";
+  // They already asked you: then this is a yes
+  if (friendRequests.includes(name)) {
+    answerRequest(name, true);
+    playerNote.textContent = name + " is now your friend!";
+    return;
+  }
+  if (!sendSocial("req/" + nameKey(name) + "/" + nameKey(username), { from: username }, true)) {
+    playerNote.textContent = "Not connected right now. Wait a moment and try again.";
+    return;
+  }
+  playerNote.textContent = "Friend invite sent to " + name + ". They need to say yes.";
 }
 
 function blockPlayer(name) {
@@ -561,11 +615,21 @@ function showFriendsList() {
     empty.textContent = "No friends yet. Find some in Add friend.";
     friendsList.appendChild(empty);
   }
-  for (const name of friends) {
+  const isOnline = name => onlineUsers.has(nameKey(name));
+  const sorted = [...friends].sort((a, b) => isOnline(b) - isOnline(a));
+  for (const name of sorted) {
     addRow(name, [
-      ["Invite to play", () => { friendsListNote.textContent = "Inviting " + name + " to play comes later."; }],
+      [isOnline(name) ? "Invite to play" : "Offline", () => inviteToPlay(name)],
       ["Block", () => blockPlayer(name)]
     ]);
+    const row = friendsList.lastChild;
+    row.children[1].disabled = !isOnline(name);
+    if (isOnline(name)) {
+      const dot = document.createElement("span");
+      dot.className = "online";
+      dot.textContent = "● online";
+      row.insertBefore(dot, row.children[1]);
+    }
   }
   // Blocked players are listed too, so you can unblock them
   if (blocked.length > 0) {
@@ -660,6 +724,7 @@ function createGame() {
   fullscreenOnPhone();
   leaveOnline();
   const code = makeCode();
+  if (inviteTarget) { sendPlayInvite(inviteTarget, code); inviteTarget = ""; }
   onlineNote.textContent = "Creating a game...";
   startRelayHost(code);   // the backup route listens from the start, so a friend can come in either way
   if (typeof Peer === "undefined") {
@@ -992,12 +1057,18 @@ function host3D() {
 }
 
 function host3DTime(time) {
-  location.href = "3d.html?mode=" + time + "&online=host&name=" + encodeURIComponent(savedUsernameOrName());
+  const invite = inviteTarget ? "&invite=" + encodeURIComponent(inviteTarget) : "";
+  location.href = "3d.html?mode=" + time + "&online=host&name=" + encodeURIComponent(savedUsernameOrName()) + invite;
 }
 
 function backToOnlineMenu() {
   hostDimMenu.style.display = "none";
   hostTimeMenu.style.display = "none";
+  if (inviteTarget) {
+    inviteTarget = "";
+    showFriendsList();
+    return;
+  }
   onlineMenu.style.display = "flex";
 }
 
@@ -1009,6 +1080,275 @@ document.getElementById("host3DCastle").addEventListener("click", () => host3DTi
 document.getElementById("host3DModern").addEventListener("click", () => host3DTime("modern"));
 document.getElementById("hostTimeBack").addEventListener("click", () => { hostTimeMenu.style.display = "none"; hostDimMenu.style.display = "flex"; });
 document.getElementById("joinGame").addEventListener("click", joinGame);
+
+// ---------- Accounts, friend invites and who is online ----------
+// These go through the same public message server as the backup route. It's open to anyone,
+// so only nicknames go there, and the login code is stored scrambled (hashed), never as it is.
+//   user/<name>            an account: the name and the scrambled code (kept by the server)
+//   online/<name>          there while that player has the game open
+//   req/<to>/<from>        a friend invite waiting for a yes or no
+//   ok/<to>/<from>         "yes, we're friends now", waiting for the one who asked
+//   invite/<to>            "come and play, here's the code" (only while both are online)
+const NAME_PATTERN = /^[\p{L}\p{N} _-]{1,20}$/u;
+let social = null;               // our connection to the message server while logged in
+let knownUsers = new Map();      // name key -> name, everyone with an account
+let onlineUsers = new Set();     // name keys of everyone online now
+let friendRequests = [];         // names that want to be your friend
+let inviteTarget = "";           // the friend we're inviting to play, while choosing what to play
+let shownInvites = new Set();    // game codes we've already shown, so the bar doesn't pop up again
+
+function nameKey(name) {
+  return name.trim().toLowerCase();
+}
+
+async function scramble(name, pin, salt) {
+  const bytes = new TextEncoder().encode(salt + ":" + nameKey(name) + ":" + pin);
+  const hash = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// Look the name up. If it has an account, check the code. If not, make the account.
+// Answers { name } or { error }.
+function checkAccount(typed, pin) {
+  return new Promise(resolve => {
+    if (typeof mqtt === "undefined" || !window.crypto || !crypto.subtle) {
+      resolve({ error: "Couldn't reach the login server. Check your internet and reload the page." });
+      return;
+    }
+    const topic = RELAY_TOPIC + "user/" + nameKey(typed);
+    const client = mqtt.connect(RELAY_BROKER, { clientId: "kf-" + Math.random().toString(36).slice(2, 10), reconnectPeriod: 0, connectTimeout: 8000 });
+    let done = false;
+    const finish = answer => {
+      if (done) return;
+      done = true;
+      clearTimeout(giveUp);
+      setTimeout(() => client.end(), 500);   // a moment so a new account gets sent first
+      resolve(answer);
+    };
+    const giveUp = setTimeout(() => finish({ error: "Couldn't reach the login server. Try again." }), 10000);
+    let account = null;
+    client.on("error", () => finish({ error: "Couldn't reach the login server. Try again." }));
+    client.on("message", (t, payload) => {
+      try { account = JSON.parse(payload.toString()); } catch (e) {}
+    });
+    client.on("connect", () => {
+      client.subscribe(topic, async () => {
+        await new Promise(r => setTimeout(r, 1200));   // a saved account arrives right after subscribing
+        if (done) return;
+        if (account && account.hash) {
+          const hash = await scramble(typed, pin, account.salt);
+          if (hash === account.hash) finish({ name: account.name || typed });
+          else finish({ error: "Wrong code for " + typed + ". If it isn't your name, someone else already has it." });
+        } else {
+          const salt = Math.random().toString(36).slice(2, 12);
+          const hash = await scramble(typed, pin, salt);
+          client.publish(topic, JSON.stringify({ name: typed, salt, hash }), { retain: true, qos: 1 });
+          finish({ name: typed });
+        }
+      });
+    });
+  });
+}
+
+function connectSocial() {
+  if (!loggedIn || social) return;
+  if (typeof mqtt === "undefined") { setTimeout(connectSocial, 500); return; }   // still loading
+  const me = nameKey(username);
+  const onlineTopic = RELAY_TOPIC + "online/" + me;
+  const client = mqtt.connect(RELAY_BROKER, {
+    clientId: "kf-" + Math.random().toString(36).slice(2, 10), reconnectPeriod: 3000, connectTimeout: 8000,
+    will: { topic: onlineTopic, payload: "", retain: true }   // the server says we left if we just disappear
+  });
+  client.me = me;
+  social = client;
+  client.on("connect", () => {
+    client.subscribe([RELAY_TOPIC + "user/+", RELAY_TOPIC + "online/+", RELAY_TOPIC + "req/" + me + "/+",
+                      RELAY_TOPIC + "ok/" + me + "/+", RELAY_TOPIC + "invite/" + me]);
+    client.publish(onlineTopic, JSON.stringify({ name: username }), { retain: true });
+  });
+  client.on("message", (topic, payload) => {
+    if (social !== client) return;
+    const parts = topic.slice(RELAY_TOPIC.length).split("/");
+    let data = null;
+    try { if (payload.length) data = JSON.parse(payload.toString()); } catch (e) { return; }
+    onSocialMessage(parts, data);
+  });
+}
+
+function disconnectSocial() {
+  if (!social) return;
+  const client = social;
+  social = null;
+  updateInvitesButton();
+  onlineUsers.clear();
+  friendRequests = [];
+  if (client.connected) client.publish(RELAY_TOPIC + "online/" + client.me, "", { retain: true });
+  setTimeout(() => client.end(), 300);
+}
+
+// Send something to the message server. "keep" means the server keeps it until it's replaced.
+function sendSocial(path, data, keep) {
+  if (!social || !social.connected) return false;
+  social.publish(RELAY_TOPIC + path, data === null ? "" : JSON.stringify(data), { retain: !!keep, qos: keep ? 1 : 0 });
+  return true;
+}
+
+function onSocialMessage(parts, data) {
+  const [kind, who, from] = parts;
+  const name = data && typeof data.name === "string" ? data.name.slice(0, 20) : "";
+  const sender = data && typeof data.from === "string" ? data.from.slice(0, 20) : "";
+  if (kind === "user") {
+    if (name) knownUsers.set(who, name); else knownUsers.delete(who);
+  } else if (kind === "online") {
+    if (data) onlineUsers.add(who); else onlineUsers.delete(who);
+    if (friendsListMenu.style.display !== "none") refreshFriendsList();
+  } else if (kind === "req") {
+    friendRequests = friendRequests.filter(n => nameKey(n) !== from);
+    if (sender && nameKey(sender) === from) {
+      if (friends.includes(sender)) sendSocial("req/" + nameKey(username) + "/" + from, null, true);   // already friends
+      else if (!blocked.includes(sender)) friendRequests.push(sender);
+    }
+    updateInvitesButton();
+  } else if (kind === "ok") {
+    // Someone said yes to our friend invite
+    if (sender && nameKey(sender) === from) {
+      if (!friends.includes(sender) && !blocked.includes(sender)) {
+        friends.push(sender);
+        saveList(FRIENDS_KEY, friends);
+      }
+      sendSocial("ok/" + nameKey(username) + "/" + from, null, true);
+      if (friendsListMenu.style.display !== "none") refreshFriendsList();
+    }
+  } else if (kind === "invite") {
+    // A friend wants to play right now
+    if (sender && friends.includes(sender) && /^[A-Z0-9]{4}$/.test(data.code || "")) showPlayInvite(sender, data.code);
+  }
+}
+
+// ---- Friend invites menu ----
+const invitesMenu = document.getElementById("invitesMenu");
+const invitesList = document.getElementById("invitesList");
+const invitesNote = document.getElementById("invitesNote");
+const invitesButton = document.getElementById("friendInvites");
+
+function updateInvitesButton() {
+  invitesButton.textContent = "3 - Friend invites" + (friendRequests.length ? " (" + friendRequests.length + ")" : "");
+  if (invitesMenu.style.display !== "none") fillInvites();
+}
+
+function fillInvites() {
+  invitesList.innerHTML = "";
+  if (friendRequests.length === 0) {
+    const empty = document.createElement("p");
+    empty.textContent = "No friend invites right now.";
+    invitesList.appendChild(empty);
+  }
+  for (const name of friendRequests) {
+    const row = document.createElement("div");
+    row.className = "friendRow";
+    const label = document.createElement("span");
+    label.textContent = name;
+    row.appendChild(label);
+    for (const [text, yes] of [["Yes", true], ["No", false]]) {
+      const button = document.createElement("button");
+      button.textContent = text;
+      button.addEventListener("click", () => {
+        answerRequest(name, yes);
+        invitesNote.textContent = yes ? name + " is now your friend!" : "You said no to " + name + ".";
+      });
+      row.appendChild(button);
+    }
+    invitesList.appendChild(row);
+  }
+}
+
+function answerRequest(name, yes) {
+  const from = nameKey(name);
+  if (yes && !friends.includes(name)) {
+    friends.push(name);
+    saveList(FRIENDS_KEY, friends);
+    sendSocial("ok/" + from + "/" + nameKey(username), { from: username }, true);
+  }
+  sendSocial("req/" + nameKey(username) + "/" + from, null, true);   // the invite is answered, remove it
+  friendRequests = friendRequests.filter(n => n !== name);
+  updateInvitesButton();
+}
+
+function openInvites() {
+  friendsMenu.style.display = "none";
+  invitesNote.textContent = social ? "" : "Not connected right now.";
+  fillInvites();
+  invitesMenu.style.display = "flex";
+}
+
+function closeInvites() {
+  invitesMenu.style.display = "none";
+  friendsMenu.style.display = "flex";
+}
+
+invitesButton.addEventListener("click", openInvites);
+document.getElementById("invitesBack").addEventListener("click", closeInvites);
+
+// Redraw the friends list without losing the message under it
+function refreshFriendsList() {
+  const note = friendsListNote.textContent;
+  showFriendsList();
+  friendsListNote.textContent = note;
+}
+
+// ---- Inviting a friend to play ----
+// You choose what to play like with "Create a game", and the friend gets a bar at the top of the screen.
+function inviteToPlay(name) {
+  if (!onlineUsers.has(nameKey(name))) return;
+  inviteTarget = name;
+  friendsListMenu.style.display = "none";
+  onlineNote.textContent = "";
+  joinCode.value = "";
+  hostDimMenu.style.display = "flex";
+}
+
+function sendPlayInvite(name, code) {
+  let tries = 0;
+  const send = () => sendSocial("invite/" + nameKey(name), { from: username, code });
+  send();
+  // Say it again for a while, in case the first one got lost
+  const timer = setInterval(() => {
+    if (++tries > 20 || onlineRole || onlineMenu.style.display === "none") { clearInterval(timer); return; }
+    send();
+  }, 3000);
+}
+
+const inviteBanner = document.getElementById("inviteBanner");
+let bannerTimer = null;
+
+function showPlayInvite(from, code) {
+  if (shownInvites.has(code) || onlineRole) return;
+  shownInvites.add(code);
+  inviteBanner.innerHTML = "";
+  inviteBanner.append(from + " wants to play with you!");
+  const small = document.createElement("small");
+  small.textContent = "Tap here to join";
+  inviteBanner.appendChild(small);
+  inviteBanner.onclick = () => acceptPlayInvite(code);
+  inviteBanner.style.display = "block";
+  clearTimeout(bannerTimer);
+  bannerTimer = setTimeout(() => { inviteBanner.style.display = "none"; }, 60000);
+}
+
+function acceptPlayInvite(code) {
+  inviteBanner.style.display = "none";
+  // Leave whatever you're doing and join the friend's game
+  leaveOnline();
+  started = false;
+  updateTouchControls();
+  document.querySelectorAll("#wrap > .menu").forEach(m => { if (m.id !== "rotateHint") m.style.display = "none"; });
+  onlineNote.textContent = "";
+  joinCode.value = code;
+  onlineMenu.style.display = "flex";
+  joinGame();
+}
+
+addEventListener("pagehide", disconnectSocial);
 document.getElementById("onlineBack").addEventListener("click", closeOnlineMenu);
 
 const P1_CONTROLS = { left: "a", right: "d", up: "w", down: "s", attack: " ", fire: "e", sprint: "ShiftLeft" };
@@ -1240,6 +1580,10 @@ document.addEventListener("keydown", function (e) {
     if (key === "Escape") closeLoginForm();
     return;
   }
+  if (invitesMenu.style.display !== "none") {
+    if (key === "Escape") closeInvites();
+    return;
+  }
   if (friendsListMenu.style.display !== "none") {
     // In the friends list: Esc goes back
     if (key === "Escape") closeFriendsList();
@@ -1258,6 +1602,7 @@ document.addEventListener("keydown", function (e) {
   if (friendsMenu.style.display !== "none") {
     // In the friends menu: Esc goes back
     if (key === "Escape") closeFriendsMenu();
+    if (key === "3") openInvites();
     return;
   }
   if (loginMenu.style.display !== "none") {
